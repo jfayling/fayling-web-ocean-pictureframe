@@ -10,6 +10,14 @@ This project is a fork of [web-ocean](https://github.com/Noniv/web-ocean) by [Ma
 |---|---|
 | ![](docs/side.jpg) | ![](docs/high.jpg) |
 
+The picture frame keeps a clock and live weather on the glass. This frame is the default place, Newnan, Georgia, in the early evening.
+
+[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](docs/pictureframe.mp4)
+
+[Play the 15-second clip with ocean sound](docs/pictureframe.mp4)
+
+The recording is H.264 with the procedural surf mixed in. GitHub plays it from the file. Use the player’s sound control to hear the water.
+
 ## Run it
 
 You need a recent Chrome with WebGPU and a reasonably capable GPU. On a laptop, force Chrome onto the dedicated GPU in the Windows graphics settings, or it will fall back to the integrated one.
