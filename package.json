@@ -1,7 +1,7 @@
 {
-  "name": "web-ocean",
+  "name": "fayling-web-ocean-pictureframe",
   "version": "1.0.0",
-  "description": "Real-time WebGPU ocean renderer: FFT waves, whitecaps, physically based sunset sky.",
+  "description": "Large-screen WebGPU ocean picture frame forked from Noniv/web-ocean: FFT waves, placed sun and moon, procedural sound, clock, and live weather.",
   "license": "MIT",
   "private": true,
   "type": "module",
