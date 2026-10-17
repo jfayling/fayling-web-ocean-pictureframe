@@ -4,19 +4,13 @@ A real-time ocean picture frame for a large screen. It draws a living sea — si
 
 This project is a fork of [web-ocean](https://github.com/Noniv/web-ocean) by [Maksymilian Dendura](https://github.com/Noniv). The wave simulation, water shading, atmosphere, and HDR post-processing come from that renderer. This fork adds the picture-frame overlays, ocean sound that follows the water under the camera, and a sky that can follow a real place and time.
 
-![Looking toward the sun from 2.4 m above the water](docs/front.jpg)
-
-| 75 degrees off the sun, 2.4 m up | Looking toward the sun from 30 m up |
-|---|---|
-| ![](docs/side.jpg) | ![](docs/high.jpg) |
-
 The picture frame keeps a clock and live weather on the glass. This frame is the default place, Newnan, Georgia, in the early evening.
 
-[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](docs/pictureframe.mp4)
+[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/)
 
-[Play the 15-second clip with ocean sound](docs/pictureframe.mp4)
+[Play the 15-second clip with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/)
 
-The recording is H.264 with the procedural surf mixed in. GitHub plays it from the file. Use the player’s sound control to hear the water.
+The clip is hosted on GitHub Pages, where the browser can play it with the procedural surf included. Press play and use the sound control to hear the water.
 
 ## Run it
 
@@ -177,7 +171,7 @@ The picture-frame additions in this fork — sound, clock, weather, placed sky m
 | `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
 | `server.mjs` | Tiny static server for development |
 | `build.mjs` | Builds `ocean.html` and `ocean.min.html` |
-| `docs/` | README images |
+| `docs/` | Picture-frame image, clip, and the GitHub Pages player |
 
 ## License
 

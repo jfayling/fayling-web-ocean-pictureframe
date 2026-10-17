@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fayling-web-ocean-pictureframe</title>
+<style>
+  html, body { margin: 0; min-height: 100%; background: #000; color: #e8e2d6; font: 15px/1.5 system-ui, sans-serif; }
+  main { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
+  video { width: min(1600px, 100%); height: auto; background: #000; }
+  p { max-width: 40rem; margin: 16px 0 0; opacity: .8; }
+  a { color: #e2a04e; }
+</style>
+</head>
+<body>
+<main>
+  <video controls playsinline preload="metadata" poster="pictureframe.jpg">
+    <source src="pictureframe.mp4" type="video/mp4">
+  </video>
+  <p>Fifteen seconds of the picture frame, with the procedural ocean sound. Press play and use the sound control to hear the water. The renderer itself is in the <a href="https://github.com/jfayling/fayling-web-ocean-pictureframe">repository</a>.</p>
+</main>
+</body>
+</html>
