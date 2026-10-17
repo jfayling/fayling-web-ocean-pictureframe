@@ -55,7 +55,7 @@ The panel is an accordion. The sections are **General**, **Clock**, **Weather**,
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 
-Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads the current settings as `ocean-settings.json`. **Import** applies the recognized values and leaves every other setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
+Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads the current settings as `ocean-settings.json`. **Import** applies the recognized values and leaves every other setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Share link** copies a URL whose `s` parameter is the full configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
 URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
 

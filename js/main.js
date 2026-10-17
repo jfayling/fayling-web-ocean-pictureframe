@@ -1162,18 +1162,65 @@ async function main() {
       if (value !== undefined) P[key] = value;
     }
   }
-  function rememberSettings() {
+  let shareUrlInput = null;
+  function settingsSnapshot() {
     const changed = {};
     for (const key of Object.keys(P)) {
       const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key] : P[key];
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
+    return changed;
+  }
+  function encodeBase64Url(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+  }
+  function decodeBase64Url(value) {
+    const normalized = value.replaceAll('-', '+').replaceAll('_', '/');
+    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+  function sharedSettings(raw) {
+    if (!raw) return {};
+    try {
+      const data = JSON.parse(decodeBase64Url(raw));
+      return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+    } catch {
+      return null;
+    }
+  }
+  function shareSettingsUrl() {
+    const url = new URL(location.href);
+    url.hash = '';
+    url.search = '';
+    url.searchParams.set('s', encodeBase64Url(JSON.stringify(settingsSnapshot())));
+    return url.href;
+  }
+  function rememberSettings() {
     try {
       localStorage.removeItem('web-ocean-settings');
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(changed));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settingsSnapshot()));
     } catch { /* unavailable */ }
+    if (shareUrlInput && !shareUrlInput.hidden) shareUrlInput.value = shareSettingsUrl();
   }
   restoreSettings();
+  let sharedSettingsFailed = false;
+  if (qs.has('s')) {
+    const shared = sharedSettings(qs.get('s'));
+    if (!shared) sharedSettingsFailed = true;
+    else {
+      for (const key of Object.keys(DEFAULTS)) P[key] = DEFAULTS[key];
+      for (const key of Object.keys(shared)) {
+        if (!Object.hasOwn(P, key)) continue;
+        const value = coerceSetting(key, shared[key]);
+        if (value !== undefined) P[key] = value;
+      }
+    }
+  }
   for (const key of Object.keys(P)) {
     if (!qs.has(key)) continue;
     const value = coerceSetting(key, qs.get(key));
@@ -1428,16 +1475,28 @@ async function main() {
   importBtn.type = 'button';
   importBtn.id = 'import-settings';
   importBtn.textContent = 'Import';
+  const shareBtn = document.createElement('button');
+  shareBtn.type = 'button';
+  shareBtn.id = 'share-settings';
+  shareBtn.textContent = 'Share link';
   const resetBtn = document.createElement('button');
   resetBtn.type = 'button';
   resetBtn.id = 'reset-settings';
   resetBtn.textContent = 'Reset to defaults';
+  shareUrlInput = document.createElement('input');
+  shareUrlInput.type = 'text';
+  shareUrlInput.id = 'share-url';
+  shareUrlInput.className = 'share-url';
+  shareUrlInput.readOnly = true;
+  shareUrlInput.hidden = true;
+  shareUrlInput.spellcheck = false;
+  shareUrlInput.setAttribute('aria-label', 'Share URL');
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
   fileInput.id = 'import-file';
   fileInput.accept = 'application/json,.json';
   fileInput.hidden = true;
-  io.append(exportBtn, importBtn, resetBtn, fileInput);
+  io.append(exportBtn, importBtn, shareBtn, resetBtn, shareUrlInput, fileInput);
   const status = document.createElement('div');
   status.className = 'status';
   status.setAttribute('role', 'status');
@@ -1654,7 +1713,28 @@ async function main() {
   }
   exportBtn.addEventListener('click', exportSettings);
   importBtn.addEventListener('click', () => fileInput.click());
+  shareBtn.addEventListener('click', async () => {
+    const url = shareSettingsUrl();
+    shareUrlInput.hidden = false;
+    shareUrlInput.value = url;
+    shareUrlInput.focus();
+    shareUrlInput.select();
+    try {
+      await navigator.clipboard.writeText(url);
+      note('Share link copied');
+    } catch {
+      note('Share link selected');
+    }
+  });
+  shareUrlInput.addEventListener('focus', () => shareUrlInput.select());
+  shareUrlInput.addEventListener('click', () => shareUrlInput.select());
   resetBtn.addEventListener('click', resetAll);
+  if (sharedSettingsFailed) {
+    const shareError = document.createElement('div');
+    shareError.className = 'status';
+    shareError.textContent = 'Could not read the shared settings';
+    status.insertAdjacentElement('afterend', shareError);
+  }
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
