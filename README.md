@@ -6,11 +6,17 @@ This project is a fork of [web-ocean](https://github.com/Noniv/web-ocean) by [Ma
 
 The picture frame keeps a clock and live weather on the glass. This frame is the default place, Newnan, Georgia, in the early evening.
 
-[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/)
+[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#pictureframe)
 
-[Play the 15-second clip with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/)
+[Play the 15-second clip with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/#pictureframe)
 
-The clip is hosted on GitHub Pages, where the browser can play it with the procedural surf included. Press play and use the sound control to hear the water.
+A time lapse of that place runs from the night of January 1, 2026 through the following evening. The line at the top left is the simulated moment, and the clock keeps the real time.
+
+[![Time lapse from night through the following evening. Open the clip to hear the surf.](docs/timelapse.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
+
+[Play the 60-second time lapse with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
+
+Both clips are hosted on GitHub Pages, where the browser can play them with the procedural surf included. Press play and use the sound control to hear the water.
 
 ## Run it
 
