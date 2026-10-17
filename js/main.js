@@ -114,6 +114,8 @@ function fail(msg) {
 }
 function log(msg) {
   console.log(msg);
+  // The dev server records this. Anywhere else the POST is rejected and only adds console noise.
+  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
   try { fetch('/__log', { method: 'POST', body: String(msg) }).catch(() => {}); } catch (e) { /* offline */ }
 }
 
