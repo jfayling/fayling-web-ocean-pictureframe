@@ -408,26 +408,13 @@ fn sunDisk(dir: vec3f) -> vec3f {
 fn starField(dir: vec3f, pixAng: f32) -> vec3f {
   let night = 1.0 - smoothstep(-0.15, -0.055, F.sunDir.y);
   if (night <= 0.0 || dir.y <= 0.0 || F.nightP.x <= 0.0) { return vec3f(0.0); }
-  let uv = vec2f(atan2(dir.z, dir.x) / (2.0 * PI) + 0.5, asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5);
-  let grid = vec2f(1200.0, 600.0);
-  let cell = vec2u(floor(uv * grid));
-  let seed = u32(max(F.nightP.z, 0.0));
-  let h = pcgHash(cell.x + pcgHash(cell.y + seed * 7919u));
-  let chance = f32(h & 65535u) / 65535.0;
-  let cutoff = mix(0.9994, 0.986, clamp(F.nightP.x, 0.0, 1.0));
-  if (chance < cutoff) { return vec3f(0.0); }
-  let hx = pcgHash(h + 17u);
-  let hy = pcgHash(h + 53u);
-  let point = vec2f(f32(hx & 65535u), f32(hy & 65535u)) / 65535.0;
-  var delta = fract(uv * grid) - point;
-  delta.x *= max(cos(asin(clamp(dir.y, -1.0, 1.0))) * 2.0, 0.2);
-  let radius = 0.035 + 0.045 * f32((h >> 16u) & 255u) / 255.0;
-  let aa = max(pixAng * grid.y / PI, 0.012);
-  let star = 1.0 - smoothstep(radius, radius + aa * 1.5, length(delta));
-  let temperature = f32((hx >> 16u) & 255u) / 255.0;
-  let colour = mix(vec3f(1.0, 0.72, 0.52), vec3f(0.65, 0.80, 1.0), temperature);
-  let magnitude = 0.45 + 2.4 * pow(chance, 18.0);
-  return colour * star * magnitude * F.nightP.y * night;
+  let eq = vec3f(dot(dir, F.starX.xyz), dot(dir, F.starY.xyz), dot(dir, F.moonUp.xyz));
+  let uv = vec2f(fract(atan2(eq.y, eq.x) / (2.0 * PI) + 1.0),
+                 0.5 - asin(clamp(eq.z, -1.0, 1.0)) / PI);
+  let stars = textureSampleLevel(starMap, sampC, uv, 0.0).rgb;
+  let density = smoothstep(0.0, 0.35, F.nightP.x);
+  let extinction = sampleTrans(camR(), max(dir.y, 0.0));
+  return stars * (0.35 + 2.65 * density) * F.nightP.y * night * extinction;
 }
 
 const MOON_ANG_R: f32 = 0.00452;
@@ -538,6 +525,7 @@ export const ENV_CUBE = FRAME_WGSL + ATMO_CORE_WGSL + /* wgsl */ `
 @group(0) @binding(2) var skyLUT: texture_2d<f32>;
 @group(0) @binding(3) var sampC: sampler;
 @group(0) @binding(4) var dst: texture_storage_2d_array<rgba16float, write>;
+@group(0) @binding(5) var starMap: texture_2d<f32>;
 ` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
 const ENV: f32 = ${ENV_SIZE}.0;
 fn faceDir(face: u32, uv: vec2f) -> vec3f {
@@ -603,6 +591,7 @@ export const SUN_VIS = FRAME_WGSL + ATMO_CORE_WGSL + /* wgsl */ `
 @group(0) @binding(2) var skyLUT: texture_2d<f32>;
 @group(0) @binding(3) var sampC: sampler;
 @group(0) @binding(4) var<storage, read_write> sunVis: array<f32, 4>;
+@group(0) @binding(5) var starMap: texture_2d<f32>;
 ` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
 var<workgroup> part: array<f32, 8>;
 // one ray per thread (7 rays across the disc), then a tiny reduction

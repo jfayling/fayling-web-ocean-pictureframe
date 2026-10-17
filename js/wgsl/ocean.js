@@ -11,7 +11,9 @@ const RENDER_BINDINGS = /* wgsl */ `
 
 // Full-resolution sky + clouds. Cloud silhouettes are anti-aliased analytically: the
 // screen-space derivative of each layer's edge function sets the width of its opacity edge.
-export const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
+export const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
+@group(0) @binding(4) var starMap: texture_2d<f32>;
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
 struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;

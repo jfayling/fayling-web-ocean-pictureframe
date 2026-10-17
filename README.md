@@ -118,7 +118,7 @@ Sky behavior starts in **Dynamic / real-time**. Cloud behavior starts in **Dynam
 
 Dynamic, Date and time, and Time lapse turn the view toward the sun and moon's daily arc, so they travel across the picture. The moon stays visible while it is above the horizon, including in daylight. Its phase, the angle of its lit side, and the tilt of its face come from the configured date, time, and place. It shows the near-side maria and bright craters, faint earthshine, and reddening near the horizon. **Size (1 = true size)** defaults to 2.5 so the surface stays readable on a large screen, and the slider goes up to 6.
 
-At night the renderer uses the calculated lunar phase and a location- and day-seeded star field. Moon size and brightness, star density and brightness, haze, exposure, and bloom stay available while the calculated positions are hidden.
+At night the renderer places 8,404 naked-eye stars from the public-domain Yale Bright Star Catalogue in their J2000 positions. The celestial sphere follows local sidereal time, so recognizable constellations rise, cross the sky, and set for the selected date, time, and location. Moon size and brightness, star density and brightness, haze, exposure, and bloom stay available while the calculated positions are hidden.
 
 ![Cloud wind, coverage, and shape settings](docs/settings-clouds.png)
 
@@ -150,7 +150,7 @@ The surface mesh is a CDLOD quadtree with 17 levels. Vertices are 6.25 cm apart 
 
 The atmosphere follows Hillaire's approach, with transmittance, multiple-scattering, and sky-view lookup tables plus aerosol haze. Cloud noise octaves are filtered by pixel footprint, and silhouettes are anti-aliased analytically: the screen-space derivative of each layer's edge function sets the width of its opacity edge. Cloud transmittance along the sun direction dims the sunlight that reaches the water, and aerial perspective is applied over the sea.
 
-A procedural celestial pass draws the phased moon and the star field. Placed sky modes compute sun and moon directions from the ZIP code and the chosen instant.
+A celestial pass draws the phased moon and samples a color star map generated in-browser from the bundled Yale Bright Star Catalogue. Placed sky modes compute the sun, moon, celestial pole, and equatorial orientation from the ZIP code and chosen instant.
 
 ### Post-processing
 
@@ -185,6 +185,7 @@ The picture-frame additions in this fork — sound, clock, weather, placed sky m
 | `js/main.js` | Device setup, resources, camera, settings, and the per-frame loop |
 | `js/audio.js` | Procedural ocean audio driven by the wave probe |
 | `js/astronomy.js` | Sun, moon, and star placement from time and location |
+| `js/star-catalog.js` | Compact public-domain Yale Bright Star Catalogue and star-map generation |
 | `js/weather.js` | Weather card and National Weather Service alerts |
 | `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
 | `server.mjs` | Tiny static server for development |

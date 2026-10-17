@@ -9,6 +9,7 @@ import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
 import { createOceanAudio } from './audio.js';
 import { celestialState } from './astronomy.js';
+import { createStarMapData, STAR_MAP_WIDTH, STAR_MAP_HEIGHT } from './star-catalog.js';
 import { createWeatherWidget } from './weather.js';
 
 const qs = new URLSearchParams(location.search);
@@ -303,16 +304,32 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(512, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(544, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
   const skyView = skyLUT.createView();
+  const starMap = device.createTexture({
+    label: 'Yale bright star catalogue',
+    size: [STAR_MAP_WIDTH, STAR_MAP_HEIGHT],
+    format: 'rgba8unorm',
+    usage: TU.TEXTURE_BINDING | TU.COPY_DST,
+  });
+  {
+    const pixels = createStarMapData();
+    device.queue.writeTexture(
+      { texture: starMap },
+      pixels,
+      { bytesPerRow: STAR_MAP_WIDTH * 4, rowsPerImage: STAR_MAP_HEIGHT },
+      [STAR_MAP_WIDTH, STAR_MAP_HEIGHT],
+    );
+  }
+  const starView = starMap.createView();
 
   const bgTrans = bg(transPipe, [{ buffer: atmoUBO }, transView], 'trans');
   const bgMS = bg(msPipe, [{ buffer: atmoUBO }, transView, sampClamp, msView], 'ms');
   const bgSkyView = bg(skyViewPipe, [{ buffer: frameUBO }, transView, msView, sampClamp, skyView], 'skyview');
-  const bgEnv = bg(envPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, lvl(envTex, 0)], 'env');
+  const bgEnv = bg(envPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, lvl(envTex, 0), starView], 'env');
   const bgSunVis = bg(sunVisPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, { buffer: sunVisBuf }], 'sunvis');
   const bgCubeMips = [];
   for (let m = 1; m < ENV_MIPS; m++) bgCubeMips.push(bg(cubeMipPipe, [lvl(envTex, m - 1), lvl(envTex, m)], 'cubemip' + m));
@@ -367,7 +384,7 @@ async function main() {
   const bgOcean = [0, 1].map((i) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
     fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
-  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
+  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView], 'sky');
 
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
@@ -495,7 +512,7 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(128);
+  const frameF = new Float32Array(136);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -885,6 +902,14 @@ async function main() {
     f[120] = P.cloudScale; f[121] = P.highCloudAltitude; f[122] = P.cloudSoftness; f[123] = 0;
     f[124] = P.cloudDensity; f[125] = P.highCloudDensity;
     f[126] = P.cloudSilver; f[127] = P.cloudAmbient;
+    if (dynamic) {
+      f[128] = liveSky.equatorialX[0]; f[129] = liveSky.equatorialX[1]; f[130] = liveSky.equatorialX[2]; f[131] = 0;
+      f[132] = liveSky.equatorialY[0]; f[133] = liveSky.equatorialY[1]; f[134] = liveSky.equatorialY[2]; f[135] = 0;
+    } else {
+      const rotation = P.starSeed * 0.001 * Math.PI * 2;
+      f[128] = Math.cos(rotation); f[129] = 0; f[130] = Math.sin(rotation); f[131] = 0;
+      f[132] = Math.sin(rotation); f[133] = 0; f[134] = -Math.cos(rotation); f[135] = 0;
+    }
     device.queue.writeBuffer(frameUBO, 0, f);
   }
 

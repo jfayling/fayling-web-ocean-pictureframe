@@ -78,6 +78,8 @@ export function celestialState(date, latitude, longitude) {
   const days = (date.getTime() - J2000) / DAY_MS;
   const sun = horizontal(sunCoords(days), days, latitude, longitude);
   const moon = horizontal(moonCoords(days), days, latitude, longitude);
+  const equatorialX = direction(horizontal({ ra: 0, dec: 0 }, days, latitude, longitude), latitude);
+  const equatorialY = direction(horizontal({ ra: Math.PI / 2, dec: 0 }, days, latitude, longitude), latitude);
   // Seen from the surface the moon sits about one degree lower than from Earth's centre.
   moon.altitude -= 0.95 * RAD * Math.cos(moon.altitude);
   const sunDirection = direction(sun, latitude);
@@ -88,6 +90,10 @@ export function celestialState(date, latitude, longitude) {
     moonDirection,
     // The celestial north pole orients the moon's face (its north points toward it).
     poleDirection: direction({ altitude: latitude * RAD, azimuth: 0 }, latitude),
+    // J2000 equatorial basis in world space. Together with poleDirection this rotates
+    // the fixed star catalogue with local sidereal time.
+    equatorialX,
+    equatorialY,
     sunAltitude: sun.altitude / RAD,
     sunAzimuth: sun.azimuth / RAD,
     moonAltitude: moon.altitude / RAD,

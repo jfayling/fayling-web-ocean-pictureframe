@@ -37,6 +37,8 @@ struct Frame {
   cloudHigh: vec4f,    // high-layer scroll xz (km), -, horizontal scale
   cloudShape: vec4f,   // low scale, high altitude km, edge softness, -
   cloudLight: vec4f,   // low/high optical density, silver lining, ambient light
+  starX: vec4f,        // J2000 equatorial x axis in world space
+  starY: vec4f,        // J2000 equatorial y axis in world space
 };
 `;
 
