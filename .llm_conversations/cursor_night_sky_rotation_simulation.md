@@ -1,5 +1,5 @@
 # Night sky rotation simulation
-_Exported on 10/17/2026 at 19:21:55 EDT from Cursor (3.25.9)_
+_Exported on 10/17/2026 at 19:38:27 EDT from Cursor (3.25.9)_
 
 ---
 
@@ -72,4 +72,28 @@ The share link restores the full configuration, including over saved settings. A
 The settings panel now has a **Share link** button next to Export and Import. It copies a URL and shows that URL in the panel so it can be copied manually as well.
 
 The link uses one `s` parameter. Its value is URL-safe base64 (base64url) containing JSON for every setting that differs from the default. Opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. A named parameter such as `windSpeed=9` still overrides the shared value.
+
+---
+
+**User**
+
+I think the Stars section now needs a dynamic vs static concept like we do for clouds. When dynamic it should attempt to do a real-world configuration
+
+---
+
+**Cursor**
+
+The stars are still manual while clouds already switch between a fixed setup and a real-world one. I'll follow that cloud pattern and see which star controls a dynamic mode should take over.
+
+Star positions already follow the sky, but density and brightness are still manual. I’ll add a Static / Dynamic control, like clouds, and drive the dynamic look from darkness, moonlight, haze, and cloud cover.
+
+The Stars section now has the same **Static** and **Dynamic / real-world** choice as the clouds. Dynamic is the default.
+
+In Dynamic mode, density, brightness, and night-sky brightness follow the scene:
+
+- A clear, moonless astronomical night shows the full star catalog against a faint airglow.
+- Twilight, haze, cloud cover, and a bright moon leave the brighter stars and raise the sky glow.
+- Daylight removes the stars.
+
+The Stars on/off toggle stays available. Choosing Static brings back the manual values, including a saved density. The random seed remains only when both the sky and the stars are static; a placed sky still uses the real constellation orientation.
 

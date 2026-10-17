@@ -103,7 +103,7 @@ Current conditions come from [Open-Meteo](https://open-meteo.com/). ZIP location
 
 ![Static sky controls for the sun, moon, and stars](docs/settings-sky.png)
 
-Sky behavior starts in **Dynamic / real-time**. Cloud behavior starts in **Dynamic / real-world**. Both can be switched to Static. The sky ZIP code defaults to 30265.
+Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior start in **Dynamic / real-world**. Each can be switched to Static. The sky ZIP code defaults to 30265.
 
 | Mode | What it does |
 |---|---|
@@ -118,7 +118,9 @@ Sky behavior starts in **Dynamic / real-time**. Cloud behavior starts in **Dynam
 
 Dynamic, Date and time, and Time lapse turn the view toward the sun and moon's daily arc, so they travel across the picture. The moon stays visible while it is above the horizon, including in daylight. Its phase, the angle of its lit side, and the tilt of its face come from the configured date, time, and place. It shows the near-side maria and bright craters, faint earthshine, and reddening near the horizon. **Size (1 = true size)** defaults to 2.5 so the surface stays readable on a large screen, and the slider goes up to 6.
 
-At night the renderer places 8,404 naked-eye stars from the public-domain Yale Bright Star Catalogue in their J2000 positions. The celestial sphere follows local sidereal time, so recognizable constellations rise, cross the sky, and set for the selected date, time, and location. Moon size and brightness, star density and brightness, haze, exposure, and bloom stay available while the calculated positions are hidden.
+At night the renderer places 8,404 naked-eye stars from the public-domain Yale Bright Star Catalogue in their J2000 positions. The celestial sphere follows local sidereal time, so recognizable constellations rise, cross the sky, and set for the selected date, time, and location. Moon size and brightness, haze, exposure, and bloom stay available while the calculated positions are hidden.
+
+Star behavior has the same Static and Dynamic / real-world choice as the clouds. Dynamic hides density, brightness, and night-sky brightness, then sets them from the current darkness, moonlight, haze, and cloud cover. A clear, moonless astronomical night shows the whole catalog against a faint airglow. Twilight, a bright moon, haze, and cloud cover leave the brighter stars and raise the sky glow. Static brings the manual values back. The random seed is only for a static sky, where it turns the catalog; a placed sky uses the real orientation in either star mode.
 
 ![Cloud wind, coverage, and shape settings](docs/settings-clouds.png)
 

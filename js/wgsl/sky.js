@@ -412,9 +412,13 @@ fn starField(dir: vec3f, pixAng: f32) -> vec3f {
   let uv = vec2f(fract(atan2(eq.y, eq.x) / (2.0 * PI) + 1.0),
                  0.5 - asin(clamp(eq.z, -1.0, 1.0)) / PI);
   let stars = textureSampleLevel(starMap, sampC, uv, 0.0).rgb;
-  let density = smoothstep(0.0, 0.35, F.nightP.x);
+  let gain = 0.35 + 2.65 * smoothstep(0.0, 0.35, F.nightP.x);
+  // The default density keeps every catalog star. Lower values let faint stars disappear first.
+  let cutoff = mix(0.48, 0.0, smoothstep(0.08, 0.55, F.nightP.x));
+  let peak = max(stars.r, max(stars.g, stars.b));
+  let keep = select(1.0, smoothstep(cutoff, min(cutoff + 0.07, 1.0), peak), cutoff > 0.001);
   let extinction = sampleTrans(camR(), max(dir.y, 0.0));
-  return stars * (0.35 + 2.65 * density) * F.nightP.y * night * extinction;
+  return stars * gain * keep * F.nightP.y * night * extinction;
 }
 
 const MOON_ANG_R: f32 = 0.00452;

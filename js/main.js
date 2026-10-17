@@ -46,6 +46,7 @@ export const P = {
   moonSize: 2.5,
   moonBrightness: 4,
   stars: true,
+  starMode: 'dynamic',
   starDensity: 0.55,
   starBrightness: 1.4,
   starSeed: 137,
@@ -832,6 +833,24 @@ async function main() {
     showDrivenSetting('cloudSilver', 0.2 + 1.45 * lowSun);
     showDrivenSetting('cloudAmbient', 0.4 + 0.85 * daylight);
   }
+  function updateDynamicStars() {
+    if (P.starMode !== 'dynamic') return;
+    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(P.sunElev * D2R);
+    const sunElev = Math.asin(Math.max(-1, Math.min(1, sunY))) / D2R;
+    const moonY = skyUsesPlace() && liveSky ? liveSky.moonDirection[1] : Math.sin(P.moonElev * D2R);
+    const moonElev = Math.asin(Math.max(-1, Math.min(1, moonY))) / D2R;
+    const illumination = skyUsesPlace() && liveSky ? liveSky.moonIllumination : P.moonPhase;
+    const moonUp = P.moon ? weatherSmooth(-1, 30, moonElev) : 0;
+    const moonlight = moonUp * Math.max(0, Math.min(1, illumination));
+    // A few stars remain in civil twilight; the full catalog needs astronomical darkness.
+    const darkness = weatherSmooth(-5, -15, sunElev);
+    const clarity = 1 - 0.55 * weatherSmooth(3, 12, P.haze);
+    const cover = Math.max(0, Math.min(1, Math.max(P.clouds, P.veil * 0.65)));
+    const openSky = (1 - 0.45 * cover) * clarity;
+    showDrivenSetting('starDensity', Math.min(1, darkness * openSky * (1 - 0.82 * moonlight)));
+    showDrivenSetting('starBrightness', Math.min(5, (0.45 + 1.15 * darkness) * (1 - 0.22 * moonlight)));
+    showDrivenSetting('nightBrightness', Math.min(4, (0.35 + 0.25 * darkness + 1.7 * moonlight) * (0.65 + 0.35 * clarity)));
+  }
 
   function writeFrame(time) {
     const aspect = W / H;
@@ -934,14 +953,16 @@ async function main() {
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
     'moon', 'stars', 'cloudMotion']);
   const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
-    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode']);
+    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode']);
   const CLOUD_DRIVEN = [
     'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
     'cloudScale', 'cloudAltitude', 'clouds', 'cloudDensity',
     'highCloudWindSpeed', 'highCloudWindDir', 'highCloudScale', 'highCloudAltitude',
     'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
   ];
+  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'nightBrightness'];
   let cloudManual = null;
+  let starManual = null;
   let cloudTime = 0;
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
@@ -1077,11 +1098,18 @@ async function main() {
         ['moonBrightness', 'Brightness', 0, 12, 0.1, ''],
       ] },
       { title: 'Stars', settings: [
+        ['starMode', 'Star behavior', 'select', [
+          ['static', 'Static'],
+          ['dynamic', 'Dynamic / real-world'],
+        ]],
         ['stars', 'Stars', 'toggle', 'Show', 'Hide'],
-        ['starDensity', 'Density', 0, 1, 0.01, ''],
-        ['starBrightness', 'Brightness', 0, 5, 0.05, ''],
-        ['starSeed', 'Random seed', 0, 9999, 1, ''],
-        ['nightBrightness', 'Night sky brightness', 0, 4, 0.05, ''],
+      ], groups: [
+        { title: 'Appearance', settings: [
+          ['starDensity', 'Density', 0, 1, 0.01, ''],
+          ['starBrightness', 'Brightness', 0, 5, 0.05, ''],
+          ['starSeed', 'Random seed', 0, 9999, 1, ''],
+          ['nightBrightness', 'Night sky brightness', 0, 4, 0.05, ''],
+        ] },
       ] },
       { title: 'Clouds', settings: [
         ['cloudMode', 'Cloud behavior', 'select', [
@@ -1166,7 +1194,9 @@ async function main() {
   function settingsSnapshot() {
     const changed = {};
     for (const key of Object.keys(P)) {
-      const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key] : P[key];
+      const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key]
+        : starManual && STAR_DRIVEN.includes(key) ? starManual[key]
+        : P[key];
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
     return changed;
@@ -1461,6 +1491,7 @@ async function main() {
   applyClock();
   applySkyMode();
   applyCloudMode();
+  applyStarMode();
   setInterval(updateClock, 250);
   setInterval(refreshDynamicSky, 30000);
   if (P.sound) oceanAudio.setEnabled(true);
@@ -1529,6 +1560,26 @@ async function main() {
     refreshModeGroups();
     if (dynamic) updateDynamicClouds(0);
   }
+  function refreshStarControls() {
+    const manual = P.starMode !== 'dynamic';
+    for (const key of STAR_DRIVEN) setSettingVisible(key, manual);
+    setSettingVisible('starSeed', manual && !skyUsesPlace());
+    refreshModeGroups();
+  }
+  function applyStarMode() {
+    const dynamic = P.starMode === 'dynamic';
+    if (dynamic && !starManual) {
+      starManual = {};
+      for (const key of STAR_DRIVEN) starManual[key] = P[key];
+    }
+    if (!dynamic && starManual) {
+      for (const key of STAR_DRIVEN) showDrivenSetting(key, starManual[key]);
+      starManual = null;
+    }
+    refreshStarControls();
+    if (dynamic) updateDynamicStars();
+    envFull = 2;
+  }
   function setSettingVisible(key, visible) {
     const control = controls.get(key);
     if (!control?.row) return;
@@ -1548,7 +1599,7 @@ async function main() {
     const placed = skyUsesPlace();
     const dated = P.skyMode === 'dated';
     const lapse = P.skyMode === 'lapse';
-    for (const key of ['sunElev', 'sunAzim', 'moonElev', 'moonAzim', 'moonPhase', 'starSeed']) {
+    for (const key of ['sunElev', 'sunAzim', 'moonElev', 'moonAzim', 'moonPhase']) {
       setSettingVisible(key, !placed);
     }
     setSettingVisible('zipCode', placed);
@@ -1562,7 +1613,7 @@ async function main() {
       if (when) when.input.value = P.skyWhen;
       if (resolveLocation) rememberSettings();
     }
-    refreshModeGroups();
+    refreshStarControls();
     if (!placed) {
       liveSky = skyInstant = null;
       if (framedSky) restoreDefaultView();
@@ -1635,6 +1686,7 @@ async function main() {
       if (key.startsWith('clock')) applyClock();
       if (key.startsWith('weather')) applyWeather();
       if (key === 'moon' || key === 'stars' || key === 'cloudMotion') envFull = 2;
+      keepManualSetting(key);
       rememberSettings();
       return true;
     }
@@ -1647,9 +1699,11 @@ async function main() {
       if (key.startsWith('weather')) applyWeather(key === 'weatherZip' || key === 'weatherUnit');
       if (key === 'skyMode') applySkyMode(true);
       if (key === 'cloudMode') applyCloudMode();
+      if (key === 'starMode') applyStarMode();
       if (key === 'skyLapseStart') resetTimeLapse();
       if (key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') resolveZipCode();
       if (key === 'skyMode' || key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') envFull = 2;
+      keepManualSetting(key);
       rememberSettings();
       return true;
     }
@@ -1667,8 +1721,13 @@ async function main() {
     if (kind === 'clock') applyClock();
     if (kind === 'weather') applyWeather();
     if (kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
+    keepManualSetting(key);
     rememberSettings();
     return true;
+  }
+  function keepManualSetting(key) {
+    if (cloudManual && CLOUD_DRIVEN.includes(key)) cloudManual[key] = P[key];
+    if (starManual && STAR_DRIVEN.includes(key)) starManual[key] = P[key];
   }
   function booleanSetting(raw) {
     if (typeof raw === 'boolean') return raw;
@@ -1707,6 +1766,7 @@ async function main() {
   }
   function resetAll() {
     cloudManual = null;
+    starManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
     note('Reset to defaults');
@@ -1833,6 +1893,7 @@ async function main() {
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
     updateDynamicClouds(dt);
+    updateDynamicStars();
     advanceTimeLapse(dt);
     if (fixedDt) dt = fixedDt;
     advanceCloudMotion(dt);
