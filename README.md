@@ -51,7 +51,9 @@ Sound and Settings sit together at the top right. They use the same surface as t
 
 ## Settings
 
-The panel is an accordion. The sections are **General**, **Clock**, **Weather**, **Ocean**, **Sound**, and **Sky**. Opening one closes the others, and the groups inside a section work the same way. General lists the keyboard and mouse shortcuts.
+The panel is an accordion. The sections are **General**, **Clock**, **Weather**, **Ocean**, **Sound**, and **Sky**. Opening one closes the others, and the groups inside a section work the same way. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
+
+![General settings and keyboard shortcuts](docs/settings-general.png)
 
 Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads the current settings as `ocean-settings.json`. **Import** applies the recognized values and leaves every other setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
@@ -61,9 +63,13 @@ When a mode is Dynamic, Date and time, or Time lapse, the controls that mode cal
 
 ### Ocean
 
+![Ocean wind, swell, and water settings](docs/settings-ocean.png)
+
 Wind, swell, and water. Wind speed, direction, and fetch shape the wind sea. Swell height, wavelength, and direction add a long-crested swell. Choppiness, turbidity, and foam tune the surface.
 
 ### Sound
+
+![Sound playback, layer, and motion settings](docs/settings-sound.png)
 
 Ocean audio is generated in the browser with the Web Audio API, so there are no sound files to download. Low swell, surface wash, and crest hiss are mixed from filtered noise. Their levels follow the simulated water height under the camera. Wind, foam, camera altitude, and the volume setting shape the result.
 
@@ -75,11 +81,15 @@ Sound starts off. The Sound checkbox, the Sound button, and M all control the sa
 
 ### Clock
 
+![Clock display and appearance settings](docs/settings-clock.png)
+
 The clock is a picture-frame overlay, enabled by default, and it stays up when Onscreen information is hidden. It uses 12-hour time and shows the date unless you change those options. Display covers on/off, 12/24-hour time, seconds, and date. Appearance covers modern, monospace, or classic type, six screen positions, size, colour, opacity, and background strength. The default position is top center.
 
 The clock shows the actual current time. In Date and time and Time lapse modes it does not follow the sky's simulated moment.
 
 ### Weather
+
+![Weather location, units, and information settings](docs/settings-weather.png)
 
 The weather card is enabled by default and uses ZIP code 30265. It shows a graphical current condition, temperature, feels-like temperature, precipitation amount and probability, humidity, wind, and the next three hourly precipitation chances. Each item can be shown or hidden. Units are Fahrenheit and mph, or Celsius and km/h. The card can sit in any corner and starts at the bottom left. Refresh defaults to 15 minutes and can be set from 5 to 60.
 
@@ -91,6 +101,8 @@ Current conditions come from [Open-Meteo](https://open-meteo.com/). ZIP location
 
 ### Sky
 
+![Static sky controls for the sun, moon, and stars](docs/settings-sky.png)
+
 Sky behavior starts in **Dynamic / real-time**. Cloud behavior starts in **Dynamic / real-world**. Both can be switched to Static. The sky ZIP code defaults to 30265.
 
 | Mode | What it does |
@@ -100,11 +112,17 @@ Sky behavior starts in **Dynamic / real-time**. Cloud behavior starts in **Dynam
 | Date and time | The same place calculation, held at a date and local time you choose. |
 | Time lapse | The same calculation, advancing on its own. It starts at January 1, 2026, 12:00 AM unless you pick another start. |
 
+![Time lapse settings, including the pace and the controls that stay available](docs/settings-time-lapse.png)
+
 **Sky minutes per second** sets the time-lapse pace. The slider runs from 1 to 100 and starts at 20, so one real second advances the sky by 20 minutes. A larger value runs faster. After a full year the sky returns to the chosen start and repeats. With Onscreen information enabled, the display shows the date, time, and place currently being rendered.
 
 Dynamic, Date and time, and Time lapse turn the view toward the sun and moon's daily arc, so they travel across the picture. The moon stays visible while it is above the horizon, including in daylight. Its phase, the angle of its lit side, and the tilt of its face come from the configured date, time, and place. It shows the near-side maria and bright craters, faint earthshine, and reddening near the horizon. **Size (1 = true size)** defaults to 2.5 so the surface stays readable on a large screen, and the slider goes up to 6.
 
 At night the renderer uses the calculated lunar phase and a location- and day-seeded star field. Moon size and brightness, star density and brightness, haze, exposure, and bloom stay available while the calculated positions are hidden.
+
+![Cloud wind, coverage, and shape settings](docs/settings-clouds.png)
+
+![Cloud lighting and atmosphere settings](docs/settings-atmosphere.png)
 
 Clouds are two independently moving layers, a broken low cumulus and a fibrous high deck. In Static mode each layer has its own wind direction, speed, altitude, scale, coverage, and optical density. Shape evolution changes the formations as they drift. Shared lighting controls tune edge softness, silver linings, and ambient light, and motion can be turned off. Lighting follows the sun through the day: warm transmission at sunrise and sunset, bright backlit edges, self-shadowed interiors, and cooler ambient bases. After dark, the moon gives nearby edges a faint cool light.
 
@@ -171,7 +189,7 @@ The picture-frame additions in this fork — sound, clock, weather, placed sky m
 | `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
 | `server.mjs` | Tiny static server for development |
 | `build.mjs` | Builds `ocean.html` and `ocean.min.html` |
-| `docs/` | Picture-frame image, clip, and the GitHub Pages player |
+| `docs/` | Picture-frame image, clip, settings screenshots, and the GitHub Pages player |
 
 ## License
 
