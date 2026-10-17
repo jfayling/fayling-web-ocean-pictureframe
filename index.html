@@ -6,26 +6,152 @@
 <title>Ocean — WebGPU</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #c.looking { cursor: grabbing; }
   #hud { position: fixed; left: 12px; top: 10px; font: 12px/1.45 ui-monospace, Consolas, monospace; color: #e8e2d6;
          text-shadow: 0 1px 2px #000a; pointer-events: none; user-select: none; }
   #hud .help { opacity: .7; }
-  #panel { position: fixed; right: 12px; top: 10px; width: 300px; padding: 10px 12px; border-radius: 8px;
+  #sky-readout { margin-bottom: 2px; font-size: 13px; letter-spacing: .01em; }
+  #sky-readout[hidden] { display: none; }
+  #toolbar { position: fixed; top: 10px; right: 12px; z-index: 2; display: flex; gap: 8px; }
+  #toolbar button { padding: 6px 12px; border: 1px solid #e5e1d822; border-radius: 8px; background: #0b0f1488;
+                    color: #e5e1d8; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; backdrop-filter: blur(6px);
+                    opacity: .38; transition: opacity .15s ease, background .15s ease; }
+  #toolbar button:hover, #toolbar button:focus-visible { opacity: 1; background: #18222ce6; }
+  #toolbar button:focus-visible { outline: 2px solid #e2a04e; outline-offset: 2px; }
+  #sound::before { content: '♪'; display: inline-block; width: 16px; opacity: .7; }
+  #sound.on, #settings[aria-expanded="true"] { border-color: #e2a04eaa; }
+  #sound.on::before { opacity: 1; }
+  #panel { position: fixed; z-index: 3; right: 12px; top: 50px; width: 330px; max-height: calc(100vh - 60px);
+           display: flex; flex-direction: column; overflow: hidden; border-radius: 8px;
            background: #0b0f14c8; backdrop-filter: blur(6px); color: #e5e1d8; font: 12px/1.3 system-ui, sans-serif; }
   #panel.hidden { display: none; }
+  #panel .panel-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+                      padding: 8px 8px 8px 12px; border-bottom: 1px solid #e5e1d822; }
+  #panel .panel-bar span { font: 650 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+  #close-settings { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent;
+                    color: inherit; font: 20px/1 system-ui, sans-serif; cursor: pointer; }
+  #close-settings:hover { background: #18222ce6; }
+  #close-settings:focus-visible { outline: 2px solid #e2a04e; outline-offset: 2px; }
+  #panel-body { overflow: auto; min-height: 0; padding: 8px 12px 10px; }
+  #panel .section-toggle, #panel .group-toggle, #panel .subgroup-toggle { display: flex; width: 100%; align-items: center; gap: 8px;
+              padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+  #panel .section-toggle { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid #e5e1d822;
+                           font: 650 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+  #panel .section:first-child .section-toggle { margin-top: 0; padding-top: 0; border-top: 0; }
+  #panel .group-toggle, #panel .subgroup-toggle { margin: 7px 0 0; font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: .04em;
+                         text-transform: uppercase; opacity: .72; }
+  #panel .subgroup-toggle { font-size: 10.5px; opacity: .64; }
+  #panel .section-toggle::before, #panel .group-toggle::before, #panel .subgroup-toggle::before { content: ''; flex: 0 0 auto; width: 0; height: 0;
+              border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor;
+              transform: rotate(-90deg); }
+  #panel .section-toggle[aria-expanded="true"]::before, #panel .group-toggle[aria-expanded="true"]::before,
+  #panel .subgroup-toggle[aria-expanded="true"]::before { transform: none; }
+  #panel .section-toggle:hover, #panel .group-toggle:hover, #panel .subgroup-toggle:hover { color: #fff; }
+  #panel .section-toggle:focus-visible, #panel .group-toggle:focus-visible, #panel .subgroup-toggle:focus-visible { outline: 2px solid #e2a04e; outline-offset: 2px; }
+  #panel .section-body { padding: 4px 0 2px; }
+  #panel .group-body { margin-left: 14px; }
+  #panel .subgroup-body { margin-left: 12px; }
   #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
-  #panel input { width: 110px; accent-color: #e2a04e; }
+  #panel label[hidden], #panel .group[hidden], #panel .subgroup[hidden] { display: none; }
+  #panel input[type="range"] { width: 110px; accent-color: #e2a04e; }
+  #panel select { width: 156px; padding: 3px 5px; border: 1px solid #e5e1d833; border-radius: 5px;
+                  background: #18222c; color: inherit; font: inherit; }
+  #panel label.select, #panel label.color, #panel label.text, #panel label.datetime { grid-template-columns: 1fr auto; }
+  #panel input[type="text"], #panel input[type="datetime-local"] { width: 156px; padding: 4px 6px; border: 1px solid #e5e1d833;
+                              border-radius: 5px; background: #18222c; color: inherit; color-scheme: dark; font: inherit; }
+  #panel label.disabled { opacity: .38; }
+  #panel input[type="color"] { width: 40px; height: 25px; padding: 1px; border: 1px solid #e5e1d833;
+                               border-radius: 5px; background: #18222c; cursor: pointer; }
+  #panel label.toggle { grid-template-columns: 1fr auto; }
+  #panel label.toggle .choice { display: flex; align-items: center; gap: 8px; }
+  #panel label.toggle input { width: 16px; height: 16px; accent-color: #e2a04e; }
+  #panel label.toggle output { width: auto; min-width: 2.6em; text-align: left; }
   #panel output { text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
+  #panel .io { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  #panel .io button { padding: 5px 10px; border: 1px solid #e5e1d855; border-radius: 6px;
+                      background: #18222ccc; color: inherit; font: inherit; cursor: pointer; }
+  #panel .io button:hover { background: #243140; }
+  #panel .io button:focus-visible { outline: 2px solid #e2a04e; outline-offset: 1px; }
+  #panel .status { min-height: 1.2em; margin-top: 5px; opacity: .75; }
+  #panel .shortcuts { margin-top: 10px; }
+  #panel .shortcuts h3 { margin: 0 0 4px; font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: .04em;
+                         text-transform: uppercase; opacity: .62; }
+  #panel .shortcuts dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+  #panel .shortcuts dt { color: #f0e6d4; }
+  #panel .shortcuts dd { margin: 0; opacity: .8; }
+  #clock-widget { position: fixed; z-index: 1; display: flex; flex-direction: column; align-items: center;
+                  padding: .16em .3em; border-radius: .16em; pointer-events: none; user-select: none;
+                  font-variant-numeric: tabular-nums; line-height: 1; white-space: nowrap; }
+  #clock-widget[hidden] { display: none; }
+  #clock-widget .clock-date { margin-top: .28em; font-size: .28em; letter-spacing: .08em; text-transform: uppercase; }
+  #clock-widget[data-style="modern"] { font-family: system-ui, sans-serif; font-weight: 250; letter-spacing: -.04em; }
+  #clock-widget[data-style="mono"] { font-family: ui-monospace, Consolas, monospace; font-weight: 400; letter-spacing: .02em; }
+  #clock-widget[data-style="classic"] { font-family: Georgia, "Times New Roman", serif; font-weight: 400; letter-spacing: .01em; }
+  #weather-widget { position: fixed; z-index: 1; width: min(310px, calc(100vw - 32px)); color: #f7fbff;
+                    font: 14px/1.2 system-ui, sans-serif; pointer-events: none; user-select: none;
+                    filter: drop-shadow(0 2px 8px #0008); }
+  #weather-widget[hidden] { display: none; }
+  #weather-widget[data-position="top-left"] { top: 16px; left: 16px; }
+  #weather-widget[data-position="top-right"] { top: 54px; right: 16px; }
+  #weather-widget[data-position="bottom-left"] { bottom: 16px; left: 16px; }
+  #weather-widget[data-position="bottom-right"] { right: 16px; bottom: 16px; }
+  .weather-card { overflow: hidden; border: 1px solid #dcecff2e; border-radius: 15px;
+                  background: linear-gradient(145deg, #101a26c9, #09121baf); backdrop-filter: blur(12px) saturate(1.2); }
+  .weather-main { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: center; padding: 12px 14px; }
+  .weather-icon { width: 58px; height: 58px; color: #f9d978; }
+  .weather-icon svg { width: 100%; height: 100%; overflow: visible; }
+  .weather-place { overflow: hidden; font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+                   text-overflow: ellipsis; white-space: nowrap; opacity: .7; }
+  .weather-condition { margin-top: 3px; font-size: 16px; font-weight: 600; }
+  .weather-temp { font-size: 39px; font-weight: 250; letter-spacing: -.07em; white-space: nowrap; }
+  .weather-details { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 9px 14px 11px;
+                     border-top: 1px solid #dcecff1b; color: #eef7ffdc; font-size: 12px; }
+  .weather-detail { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .weather-detail svg { width: 15px; height: 15px; opacity: .82; }
+  .weather-forecast { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid #dcecff1b; }
+  .weather-hour { padding: 8px 5px 9px; text-align: center; }
+  .weather-hour + .weather-hour { border-left: 1px solid #dcecff16; }
+  .weather-hour time { display: block; font-size: 10px; opacity: .62; }
+  .weather-hour strong { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; }
+  .weather-updated { display: block; padding: 0 14px 8px; font-size: 10px; letter-spacing: .03em;
+                     text-align: right; opacity: .5; }
+  .weather-alert { display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: center;
+                   margin-bottom: 8px; padding: 9px 12px; border: 1px solid #ffc04b99; border-radius: 12px;
+                   background: #7a3700e8; color: #fff8e7; box-shadow: 0 0 22px #ff8a0033; }
+  .weather-alert[data-severity="Extreme"], .weather-alert[data-severity="Severe"] {
+                   border-color: #ff766f; background: #7d1018ed; box-shadow: 0 0 25px #ff203f55; }
+  .weather-alert-icon { width: 25px; height: 25px; }
+  .weather-alert strong { display: block; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+  .weather-alert span { display: block; margin-top: 2px; overflow: hidden; font-size: 11px;
+                        text-overflow: ellipsis; white-space: nowrap; opacity: .9; }
+  .weather-error { padding: 11px 14px; font-size: 12px; opacity: .72; }
   #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud">
+  <div id="sky-readout" hidden></div>
   <div id="fps">starting…</div>
-  <div class="help">click: mouse look · WASD move · Space/E up · Q/C down · Shift fast · wheel speed · H panel</div>
+  <div class="help">left drag: look · left+right: reset view · WASD move · Space/E up · Q/C down · wheel up/down · Shift fast · F1 settings · H panel · M sound</div>
 </div>
-<div id="panel" class="hidden"></div>
+<div id="toolbar">
+  <button id="sound" type="button" aria-pressed="false" title="Toggle procedural ocean audio (M)">Sound off</button>
+  <button id="settings" type="button" aria-expanded="false" title="Show settings (F1)">Settings</button>
+</div>
+<time id="clock-widget" aria-label="Current time">
+  <span class="clock-time"></span>
+  <span class="clock-date"></span>
+</time>
+<aside id="weather-widget" data-position="bottom-left" aria-label="Current weather" aria-live="polite" hidden></aside>
+<div id="panel" class="hidden">
+  <div class="panel-bar">
+    <span>Settings</span>
+    <button id="close-settings" type="button" aria-label="Close settings" title="Close settings (Esc)">×</button>
+  </div>
+  <div id="panel-body"></div>
+</div>
 <div id="err"></div>
 <script type="module" src="js/main.js"></script>
 </body>

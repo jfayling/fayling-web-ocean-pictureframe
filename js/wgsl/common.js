@@ -28,7 +28,15 @@ struct Frame {
   sssCol:   vec4f,     // sss colour rgb, sss strength
   foamP:    vec4f,     // J threshold, J gain, foam intensity, lace sharpness
   fogExt:   vec4f,     // rgb extinction per metre near sea level
-  cloudP:   vec4f,     // altitude km, coverage, optical density, wind time
+  cloudP:   vec4f,     // altitude km, coverage, edge softness, -
+  moonDir:  vec4f,     // xyz towards moon, w = moon brightness
+  moonLight: vec4f,    // xyz from moon towards sun, w = moon angular-radius multiplier
+  nightP:   vec4f,     // star density, brightness, random seed, night-sky brightness
+  moonUp:   vec4f,     // xyz towards the celestial north pole (orients the lunar face)
+  cloudWind: vec4f,    // low-layer scroll xz (km), -, integrated evolution
+  cloudHigh: vec4f,    // high-layer scroll xz (km), -, horizontal scale
+  cloudShape: vec4f,   // low scale, high altitude km, edge softness, -
+  cloudLight: vec4f,   // low/high optical density, silver lining, ambient light
 };
 `;
 

@@ -257,28 +257,36 @@ fn cloudFbm(p: vec2f, fp: f32, oct: i32, billow: f32) -> f32 {
 // Signed "edge" functions (cloud where > 0) and their density ramps. The edge value is
 // what the sky pass differentiates (fwidth) to anti-alias the cloud silhouettes analytically.
 fn lowEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
-  let t = F.cloudP.w;
-  var p = q * 0.38 + vec2f(t * 0.004, t * 0.0012);
-  let w = vec2f(gnoise(p * 0.3 + vec2f(1.7, 9.2)), gnoise(p * 0.3 + vec2f(8.3, 2.8)));
+  let scale = max(F.cloudShape.x, 0.1);
+  // Scroll and evolution are integrated offsets, so a wind change cannot teleport the layer.
+  let world = q - F.cloudWind.xy;
+  var p = world * (0.38 / scale);
+  let evolve = F.cloudWind.w * 0.001;
+  let w = vec2f(
+    gnoise(p * 0.3 + vec2f(1.7 + evolve, 9.2 - evolve * 0.37)),
+    gnoise(p * 0.3 + vec2f(8.3 - evolve * 0.61, 2.8 + evolve))
+  );
   p += w * 1.4;
   // slightly elongated cells (cloud streets), mildly billowy small scales for ragged edges
-  let base = cloudFbm(p * vec2f(1.0, 1.7), fp * 0.65, oct, 0.35) * 1.3 + 0.5;
-  let large = gnoise(q * 0.05 + vec2f(3.1, 1.3)) * 0.7;
+  let base = cloudFbm(p * vec2f(1.0, 1.7), fp * 0.65 / scale, oct, 0.35) * 1.3 + 0.5;
+  let large = gnoise(world * (0.05 / scale) + vec2f(3.1 + evolve * 0.15, 1.3)) * 0.7;
   return base + large - (1.0 - F.cloudP.y);
 }
-fn lowSoft(fp: f32) -> f32 { return 0.38 + min(fp * 0.65, 1.0) * 0.3; }
+fn lowSoft(fp: f32) -> f32 { return (0.38 + min(fp * 0.65, 1.0) * 0.3) * F.cloudShape.z; }
 fn lowDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
   return clamp(lowEdge(q, fp, oct) / lowSoft(fp), 0.0, 1.0);
 }
 fn highEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
-  let t = F.cloudP.w;
+  let scale = max(F.cloudHigh.w, 0.1);
+  let world = q - F.cloudHigh.xy;
+  let evolve = F.cloudWind.w * 0.00035;
   // altostratus deck: smooth, slightly fibrous
-  let p = CLOUD_ROT * (q * vec2f(0.09, 0.20)) + vec2f(t * 0.0015, 0.0);
-  let n = cloudFbm(p, fp * 0.2, oct, 0.0) * 1.25 + 0.5;
-  let big = gnoise(q * 0.012 + vec2f(7.0, 3.0)) * 0.6;
+  let p = CLOUD_ROT * (world * vec2f(0.09, 0.20) / scale) + vec2f(evolve, -evolve * 0.2);
+  let n = cloudFbm(p, fp * 0.2 / scale, oct, 0.0) * 1.25 + 0.5;
+  let big = gnoise(world * (0.012 / scale) + vec2f(7.0 - evolve * 0.2, 3.0)) * 0.6;
   return n + big - (1.0 - F.atmo.z);
 }
-fn highSoft(fp: f32) -> f32 { return 0.85 + min(fp * 0.2, 1.0) * 0.3; }
+fn highSoft(fp: f32) -> f32 { return (0.85 + min(fp * 0.2, 1.0) * 0.3) * F.cloudShape.z; }
 fn highDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
   return clamp(highEdge(q, fp, oct) / highSoft(fp), 0.0, 1.0);
 }
@@ -312,11 +320,16 @@ fn shadeLayer(dir: vec3f, h: CloudHit, hc: f32, d: f32, s1: f32, s2: f32, s3: f3
   // multiple scattering: a low sun lights cloud tops and sun-facing flanks, not the bases we
   // see from below, so diffused sunlight shows mostly when looking towards the sun
   let toward = smoothstep(-0.3, 0.9, cosT);
-  let ms = sunC * (0.025 + 0.22 * rim) * mix(1.0, Ts, 0.5) * alpha * (0.25 + 0.75 * toward);
+  let ms = sunC * (0.025 + 0.22 * rim * F.cloudLight.z) * mix(1.0, Ts, 0.5) * alpha * (0.25 + 0.75 * toward);
   // bases are lit by the sky from the sides/below (horizon band + sea), cooler than the tops
   let amb = (skyAtmo(normalize(vec3f(dir.x, 0.03, dir.z))) * 0.26 + skyAtmo(vec3f(0.0, 1.0, 0.0)) * 0.42)
-            * alpha * (1.0 - 0.35 * d);
-  return vec4f(single + ms + amb, alpha);
+            * alpha * (1.0 - 0.35 * d) * F.cloudLight.w;
+  // At night the moon gives cloud edges a very faint cool illumination.
+  let moonPhase = 0.5 * (1.0 + dot(normalize(F.moonLight.xyz), -normalize(F.moonDir.xyz)));
+  let moonFacing = smoothstep(-0.2, 0.8, dot(dir, F.moonDir.xyz));
+  let moonLit = vec3f(0.008, 0.011, 0.018) * F.moonDir.w * moonPhase * moonFacing *
+                alpha * exp(-tauS * 0.35) * (1.0 - smoothstep(-0.08, 0.03, F.sunDir.y));
+  return vec4f(single + ms + amb + moonLit, alpha);
 }
 
 // returns (premultiplied radiance, fraction of the background sky hidden)
@@ -341,10 +354,10 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
         let s1 = lowDensity(h.q + sxz * 0.08, fp, 5) * far;
         let s2 = lowDensity(h.q + sxz * 0.25, fp, 4) * far;
         let s3 = lowDensity(h.q + sxz * 0.6, fp, 3) * far;
-        lo = shadeLayer(dir, h, hc, d, s1, s2, s3, F.cloudP.z, 0.75);
+        lo = shadeLayer(dir, h, hc, d, s1, s2, s3, F.cloudLight.x, 0.75);
         // opacity saturates within a sliver of the density ramp, making a hard silhouette:
         // spread it over ~1.5 pixels
-        let aw = select(fp * 0.38 * 2.5, aa.x, aa.x >= 0.0);
+        let aw = select(fp * 0.38 * 2.5, aa.x, aa.x >= 0.0) * F.cloudShape.z;
         lo *= smoothstep(0.0, aw * 1.5 + 1e-6, e);
         loVis = exp(-h.t * 0.02 * (0.6 + 0.4 * F.atmo.x));
       }
@@ -353,7 +366,7 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
   var hi = vec4f(0.0);
   var hiVis = 1.0;
   if (F.atmo.z > 0.001) {
-    let hc = 4.5;
+    let hc = F.cloudShape.y;
     let h = hitLayer(dir, hc);
     let far = 1.0 - smoothstep(30.0, 70.0, h.t);
     if (far > 0.0) {
@@ -363,8 +376,8 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
       if (d > 0.002) {
         let s1 = highDensity(h.q + sxz * 0.15, fp, 4) * far;
         let s2 = highDensity(h.q + sxz * 0.5, fp, 3) * far;
-        hi = shadeLayer(dir, h, hc, d, s1, s2, s2, F.atmo.w, 0.80);
-        let aw = select(fp * 0.2 * 2.5, aa.y, aa.y >= 0.0);
+        hi = shadeLayer(dir, h, hc, d, s1, s2, s2, F.cloudLight.y, 0.80);
+        let aw = select(fp * 0.2 * 2.5, aa.y, aa.y >= 0.0) * F.cloudShape.z;
         hi *= smoothstep(0.0, aw * 1.5 + 1e-6, e);
         hiVis = exp(-h.t * 0.010 * (0.6 + 0.4 * F.atmo.x));
       }
@@ -379,6 +392,7 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
 }
 
 fn sunDisk(dir: vec3f) -> vec3f {
+  if (F.sunDir.y <= -0.01) { return vec3f(0.0); }
   let c = dot(dir, F.sunDir.xyz);
   let ang = sqrt(max(2.0 * (1.0 - c), 0.0));
   let pix = F.screen.w * 2.0 * length(F.camUp.xyz) * 0.75;
@@ -391,6 +405,119 @@ fn sunDisk(dir: vec3f) -> vec3f {
   return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01));
 }
 
+fn starField(dir: vec3f, pixAng: f32) -> vec3f {
+  let night = 1.0 - smoothstep(-0.15, -0.055, F.sunDir.y);
+  if (night <= 0.0 || dir.y <= 0.0 || F.nightP.x <= 0.0) { return vec3f(0.0); }
+  let uv = vec2f(atan2(dir.z, dir.x) / (2.0 * PI) + 0.5, asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5);
+  let grid = vec2f(1200.0, 600.0);
+  let cell = vec2u(floor(uv * grid));
+  let seed = u32(max(F.nightP.z, 0.0));
+  let h = pcgHash(cell.x + pcgHash(cell.y + seed * 7919u));
+  let chance = f32(h & 65535u) / 65535.0;
+  let cutoff = mix(0.9994, 0.986, clamp(F.nightP.x, 0.0, 1.0));
+  if (chance < cutoff) { return vec3f(0.0); }
+  let hx = pcgHash(h + 17u);
+  let hy = pcgHash(h + 53u);
+  let point = vec2f(f32(hx & 65535u), f32(hy & 65535u)) / 65535.0;
+  var delta = fract(uv * grid) - point;
+  delta.x *= max(cos(asin(clamp(dir.y, -1.0, 1.0))) * 2.0, 0.2);
+  let radius = 0.035 + 0.045 * f32((h >> 16u) & 255u) / 255.0;
+  let aa = max(pixAng * grid.y / PI, 0.012);
+  let star = 1.0 - smoothstep(radius, radius + aa * 1.5, length(delta));
+  let temperature = f32((hx >> 16u) & 255u) / 255.0;
+  let colour = mix(vec3f(1.0, 0.72, 0.52), vec3f(0.65, 0.80, 1.0), temperature);
+  let magnitude = 0.45 + 2.4 * pow(chance, 18.0);
+  return colour * star * magnitude * F.nightP.y * night;
+}
+
+const MOON_ANG_R: f32 = 0.00452;
+
+fn moonFbm(p: vec2f) -> f32 {
+  return gnoise(p) * 0.5 + gnoise(p * 2.1 + vec2f(5.2, 1.3)) * 0.25 +
+         gnoise(p * 4.3 + vec2f(1.7, 9.2)) * 0.125 + gnoise(p * 8.7 + vec2f(8.3, 2.8)) * 0.0625;
+}
+
+fn mare(p: vec2f, c: vec2f, r: vec2f) -> f32 {
+  let d = length((p - c) / r) + moonFbm(p * 5.0 + c * 13.0) * 0.55;
+  return 1.0 - smoothstep(0.45, 1.25, d);
+}
+
+// Near-side albedo with lunar north up (x = right, y = up, in disc radii).
+fn moonAlbedo(p: vec2f) -> f32 {
+  var m = 0.0;
+  m = max(m, mare(p, vec2f(-0.60, 0.10), vec2f(0.32, 0.58)));  // Oceanus Procellarum
+  m = max(m, mare(p, vec2f(-0.26, 0.47), vec2f(0.36, 0.29)));  // Imbrium
+  m = max(m, mare(p, vec2f(0.20, 0.38), vec2f(0.19, 0.19)));   // Serenitatis
+  m = max(m, mare(p, vec2f(0.36, 0.10), vec2f(0.25, 0.19)));   // Tranquillitatis
+  m = max(m, mare(p, vec2f(0.71, 0.29), vec2f(0.13, 0.11)));   // Crisium
+  m = max(m, mare(p, vec2f(0.60, -0.14), vec2f(0.14, 0.21)));  // Fecunditatis
+  m = max(m, mare(p, vec2f(0.40, -0.27), vec2f(0.11, 0.10)));  // Nectaris
+  m = max(m, mare(p, vec2f(-0.17, -0.34), vec2f(0.21, 0.15))); // Nubium
+  m = max(m, mare(p, vec2f(-0.51, -0.39), vec2f(0.11, 0.10))); // Humorum
+  m = max(m, mare(p, vec2f(-0.02, 0.76), vec2f(0.50, 0.08)));  // Frigoris
+  m = max(m, mare(p, vec2f(0.05, 0.05), vec2f(0.10, 0.09)) * 0.7); // Sinus Medii
+  // maria vary in tone; highlands are bright and heavily cratered
+  m *= 0.8 + 0.25 * moonFbm(p * 9.0 + vec2f(4.0, 7.0));
+  var a = mix(1.0, 0.52, clamp(m, 0.0, 1.0));
+  a *= 0.92 + 0.09 * moonFbm(p * 22.0) + 0.05 * gnoise(p * 61.0 + vec2f(3.1, 1.7)) * (1.0 - m * 0.6);
+  // bright young craters and their ray systems
+  let t = p - vec2f(-0.13, -0.72);
+  let rays = pow(abs(sin(atan2(t.y, t.x) * 9.0 + 0.7)), 18.0) * exp(-length(t) * 2.6);
+  a += 0.5 * exp(-dot(t, t) * 1500.0) + 0.14 * rays * (1.0 - m * 0.5);
+  let c = p - vec2f(-0.33, 0.25);
+  a += 0.3 * exp(-dot(c, c) * 2000.0);
+  let k = p - vec2f(-0.65, 0.13);
+  a += 0.25 * exp(-dot(k, k) * 2400.0);
+  return a;
+}
+
+// Returns radiance and how much of the background the disc hides.
+fn moonDisk(dir: vec3f, pixAng: f32) -> vec4f {
+  if (F.moonDir.y <= -0.02 || F.moonDir.w <= 0.0) { return vec4f(0.0); }
+  let moon = normalize(F.moonDir.xyz);
+  let radius = MOON_ANG_R * F.moonLight.w;
+  let cosA = dot(dir, moon);
+  if (cosA < cos(radius * 8.0)) { return vec4f(0.0); }
+  var up = F.moonUp.xyz - moon * dot(F.moonUp.xyz, moon);
+  if (dot(up, up) < 1e-6) { up = vec3f(0.0, 1.0, 0.0) - moon * moon.y; }
+  up = normalize(up);
+  let right = normalize(cross(moon, up));
+  let p = vec2f(dot(dir, right), dot(dir, up)) / radius;
+  let dist = length(p);
+  let aa = max(pixAng / radius, 0.02);
+  let cover = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, dist);
+  let sun = normalize(F.moonLight.xyz);
+  let illum = 0.5 * (1.0 + dot(sun, -moon));
+  // atmospheric extinction reddens and dims the moon low over the horizon
+  let ext = sampleTrans(camR(), max(moon.y, 0.0));
+  let daylight = smoothstep(-0.04, 0.2, F.sunDir.y);
+  // keeps lit highlands just under white after tone mapping so the maria stay readable
+  let gain = F.moonDir.w * 0.4 * mix(1.0, 4.0, daylight);
+  // faint aureole of scattered moonlight, scaled by how much of the disc is lit
+  let halo = illum * 0.025 * exp(-max(dist - 1.0, 0.0) * 0.9) * (1.0 - cover) * (1.0 - daylight);
+  var col = vec3f(0.0);
+  if (cover > 0.0) {
+    let q = p / max(dist, 1.0);
+    let mu = sqrt(max(1.0 - dot(q, q), 0.0));
+    let n = right * q.x + up * q.y - moon * mu;
+    let mu0 = dot(n, sun);
+    // Lommel-Seeliger: the regolith shows almost no limb darkening, so the full moon is evenly bright
+    // (blended toward flat so the lit side reads at its full extent near the terminator)
+    let ls = mix(2.0 * max(mu0, 0.0) / (max(mu0, 0.0) + mu + 1e-4), 1.0, 0.55) * smoothstep(-0.015, 0.04, mu0);
+    // earthshine on the night side is strongest near new moon
+    let es = 0.01 * pow(1.0 - illum, 3.0) * (1.0 - daylight);
+    col = vec3f(1.0, 0.96, 0.9) * moonAlbedo(q) * (ls + es) * cover;
+  }
+  return vec4f((col + vec3f(0.85, 0.9, 1.0) * halo) * gain * ext, cover);
+}
+
+fn nightSky(dir: vec3f, pixAng: f32) -> vec3f {
+  let night = 1.0 - smoothstep(-0.12, 0.015, F.sunDir.y);
+  let base = vec3f(0.002, 0.004, 0.009) * F.nightP.w * night * (0.35 + 0.65 * max(dir.y, 0.0));
+  let m = moonDisk(dir, pixAng);
+  return base + starField(dir, pixAng) * (1.0 - m.a) + m.rgb;
+}
+
 fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var dir = dirIn;
   dir.y = max(dir.y, 0.0005);
@@ -399,6 +526,7 @@ fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var sunT = 1.0;
   let cl = cloudLayers(dir, pixAng, vec2f(-1.0), &sunT);
   L = L * (1.0 - cl.a) + cl.rgb;
+  L += nightSky(dir, pixAng) * (1.0 - cl.a);
   if (withSun) { L += sunDisk(dir) * sunT; }
   return L;
 }

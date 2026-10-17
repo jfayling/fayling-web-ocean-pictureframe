@@ -7,6 +7,9 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
+import { createOceanAudio } from './audio.js';
+import { celestialState } from './astronomy.js';
+import { createWeatherWidget } from './weather.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
@@ -28,14 +31,78 @@ export const P = {
   choppy: 1.25,
   turbidity: 1.6,     // water body brightness (coastal sediment / plankton)
   foam: 1.0,
+  skyMode: 'dynamic',
+  zipCode: '30265',
+  skyWhen: '',
+  skyLapseStart: '2026-01-01T00:00',
+  lapsePace: 20,
   sunElev: 2.6,        // deg
   sunAzim: 4,          // deg (0 = straight ahead of the start view)
+  moon: true,
+  moonElev: 28,
+  moonAzim: -42,
+  moonPhase: 0.78,
+  moonSize: 2.5,
+  moonBrightness: 4,
+  stars: true,
+  starDensity: 0.55,
+  starBrightness: 1.4,
+  starSeed: 137,
+  nightBrightness: 1,
+  cloudMode: 'dynamic',
   exposure: 1.35,
   haze: 3.0,
+  cloudMotion: true,
+  cloudWindSpeed: 8,
+  cloudWindDir: 118,
+  cloudEvolution: 0.35,
+  cloudScale: 1,
+  cloudAltitude: 2,
   clouds: 0.40,
+  cloudDensity: 2.2,
+  cloudSoftness: 1,
+  highCloudWindSpeed: 22,
+  highCloudWindDir: 145,
+  highCloudScale: 1,
+  highCloudAltitude: 7,
   veil: 0.36,
+  highCloudDensity: 0.9,
+  cloudSilver: 1,
+  cloudAmbient: 1,
   bloom: 0.10,
+  audioVolume: 0.7,
+  audioRumble: 1,
+  audioWash: 1,
+  audioHiss: 1,
+  audioSync: 1,
+  audioStereo: 1,
+  sound: false,
+  showButtons: true,
+  showInfo: false,
+  clock: true,
+  clock24h: false,
+  clockSeconds: false,
+  clockDate: true,
+  clockStyle: 'modern',
+  clockSize: 72,
+  clockColor: '#ffffff',
+  clockPosition: 'top-center',
+  clockOpacity: 0.9,
+  clockBackground: 0.18,
+  weather: true,
+  weatherZip: '30265',
+  weatherRefresh: 15,
+  weatherUnit: 'fahrenheit',
+  weatherPosition: 'bottom-left',
+  weatherTemp: true,
+  weatherFeels: true,
+  weatherPrecip: true,
+  weatherHumidity: true,
+  weatherWind: true,
+  weatherForecast: true,
+  weatherAlerts: true,
 };
+const DEFAULTS = { ...P };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
 function fail(msg) {
@@ -75,6 +142,14 @@ async function main() {
   device.onuncapturederror = (e) => log('GPU error: ' + e.error.message);
 
   const canvas = document.getElementById('c');
+  let soundControl = null;
+  const oceanAudio = createOceanAudio(document.getElementById('sound'), (on) => {
+    P.sound = on;
+    rememberSettings();
+    if (!soundControl) return;
+    soundControl.input.checked = on;
+    soundControl.output.textContent = on ? 'On' : 'Off';
+  });
   const ctx = canvas.getContext('webgpu');
   const swapFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format: swapFormat, alphaMode: 'opaque', usage: TU.RENDER_ATTACHMENT | TU.COPY_SRC });
@@ -226,7 +301,7 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(384, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(512, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
@@ -298,7 +373,7 @@ async function main() {
   const probeOut = mkBuf(16, GU.STORAGE | GU.COPY_SRC, 'probe out');
   const probeRead = mkBuf(16, GU.MAP_READ | GU.COPY_DST, 'probe read');
   const bgProbe = bg(probePipe, [{ buffer: frameUBO }, fullArr(dispTex), samplerSim, { buffer: probeOut }], 'probe');
-  let probePending = false, waterH = 0;
+  let probePending = false, waterH = 0, audioWaterH = 0;
   const onProbe = () => {
     waterH = new Float32Array(probeRead.getMappedRange(0, 16))[0];
     probeRead.unmap();
@@ -418,7 +493,7 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(96);
+  const frameF = new Float32Array(128);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -442,30 +517,87 @@ async function main() {
   // --------------------------------------------------------------------------------------
   // Camera & input
   // --------------------------------------------------------------------------------------
-  const cam = { x: 0, y: 2.4, z: 0, yaw: 0, pitch: -5.5 * D2R, fovY: 58 * D2R, speed: 6 };
+  const CAM_DEFAULT = { x: 0, y: 2.4, z: 0, yaw: 0, pitch: -5.5 * D2R, fovY: 58 * D2R, speed: 6 };
+  // Looks toward the sun and moon's daily arc while keeping the horizon in frame.
+  const SKY_VIEW = { pitch: 16 * D2R, fovY: 75 * D2R };
+  const camLocked = qs.has('cam') || qs.has('fov');
+  const cam = { ...CAM_DEFAULT };
+  let framedSky = false;
+  function frameSkyView() {
+    if (camLocked) return;
+    cam.yaw = 0;
+    cam.pitch = SKY_VIEW.pitch;
+    cam.fovY = SKY_VIEW.fovY;
+    framedSky = true;
+  }
+  function restoreDefaultView() {
+    cam.yaw = CAM_DEFAULT.yaw;
+    cam.pitch = CAM_DEFAULT.pitch;
+    cam.fovY = CAM_DEFAULT.fovY;
+    framedSky = false;
+  }
+  function resetView() {
+    cam.x = CAM_DEFAULT.x; cam.y = CAM_DEFAULT.y; cam.z = CAM_DEFAULT.z;
+    if (skyUsesPlace()) frameSkyView();
+    else restoreDefaultView();
+  }
   if (qs.get('cam')) {
     const v = qs.get('cam').split(',').map(Number);
     cam.x = v[0]; cam.y = v[1]; cam.z = v[2]; cam.yaw = (v[3] || 0) * D2R; cam.pitch = (v[4] || 0) * D2R;
   }
   if (qs.get('fov')) cam.fovY = Number(qs.get('fov')) * D2R;
   const keys = Object.create(null);
-  addEventListener('keydown', (e) => { keys[e.code] = true; if (e.code === 'KeyH') togglePanel(); });
+  addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.repeat) return;
+    if (e.code === 'Escape') setPanelOpen(false);
+    if (e.code === 'F1') { e.preventDefault(); showPanel(); }
+    if (e.code === 'KeyH') togglePanel();
+    if (e.code === 'KeyM') oceanAudio.toggle();
+  });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
-  addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
-  canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) canvas.requestPointerLock(); });
-  let dragging = false;
-  canvas.addEventListener('mousedown', (e) => { if (e.button === 2) dragging = true; });
-  addEventListener('mouseup', () => { dragging = false; });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  addEventListener('mousemove', (e) => {
-    if (document.pointerLockElement === canvas || dragging) {
-      cam.yaw += e.movementX * 0.0022;
-      cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - e.movementY * 0.0022));
+  // Hold the left button to look; pressing left + right together resets the view. The chord
+  // stays latched until both buttons are up so releasing one of them doesn't resume looking.
+  let looking = false, chord = false;
+  function setLooking(on) {
+    looking = on;
+    canvas.classList.toggle('looking', on);
+  }
+  addEventListener('blur', () => {
+    for (const k in keys) keys[k] = false;
+    setLooking(false);
+    chord = false;
+  });
+  canvas.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    if ((e.buttons & 3) === 3) {
+      chord = true;
+      setLooking(false);
+      resetView();
+    } else if (e.button === 0 && !chord) {
+      setLooking(true);
     }
   });
+  addEventListener('mouseup', (e) => {
+    if (!(e.buttons & 1)) setLooking(false);
+    if (!(e.buttons & 3)) chord = false;
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  addEventListener('mousemove', (e) => {
+    if (!looking) return;
+    if (!(e.buttons & 1)) { setLooking(false); return; }
+    cam.yaw += e.movementX * 0.0022;
+    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - e.movementY * 0.0022));
+  });
   addEventListener('wheel', (e) => {
-    cam.speed = Math.max(0.5, Math.min(400, cam.speed * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-  }, { passive: true });
+    if (e.target instanceof Element && e.target.closest('#panel')) return;
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? 1 : 100;
+    const steps = e.deltaY / unit;
+    if (!steps) return;
+    const boost = e.shiftKey || keys.ShiftLeft || keys.ShiftRight ? 5 : 1;
+    cam.y = Math.max(1, Math.min(3000, cam.y - steps * cam.speed * boost));
+  }, { passive: false });
 
   function updateCamera(dt) {
     const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
@@ -556,6 +688,131 @@ async function main() {
   // --------------------------------------------------------------------------------------
   let simTime = Number(qs.get('t')) || 0;
   let frameIndex = 0;
+  let skyLocation = null;
+  let liveSky = null;
+  let skyInstant = null;
+
+  function horizonDirection(elevation, azimuth) {
+    const e = elevation * D2R, a = azimuth * D2R;
+    return [Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e)];
+  }
+
+  function skyUsesPlace() {
+    return P.skyMode === 'dynamic' || P.skyMode === 'dated' || P.skyMode === 'lapse';
+  }
+  function localDateTimeValue(date = new Date()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  let lapseElapsedMs = 0;
+  let lapseMinute = '';
+  function parseLocalDateTime(value) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value || '')) return null;
+    const when = new Date(value);
+    return Number.isNaN(when.getTime()) ? null : when;
+  }
+  function lapseYearMs(start) {
+    const end = new Date(start.getTime());
+    end.setFullYear(end.getFullYear() + 1);
+    return Math.max(60000, end.getTime() - start.getTime());
+  }
+  function resetTimeLapse() {
+    lapseElapsedMs = 0;
+    lapseMinute = '';
+  }
+  function lapseInstant() {
+    const start = parseLocalDateTime(P.skyLapseStart);
+    if (!start) return null;
+    return new Date(start.getTime() + (lapseElapsedMs % lapseYearMs(start)));
+  }
+  function skyMoment() {
+    if (P.skyMode === 'dynamic') return new Date();
+    if (P.skyMode === 'lapse') return lapseInstant();
+    return parseLocalDateTime(P.skyWhen);
+  }
+  function advanceTimeLapse(dt) {
+    if (P.skyMode !== 'lapse' || dt <= 0) return;
+    const pace = Math.max(1, Number(P.lapsePace) || 20);
+    lapseElapsedMs += dt * 60000 * pace;
+    const instant = lapseInstant();
+    if (!instant) return;
+    const minute = localDateTimeValue(instant);
+    if (minute === lapseMinute) return;
+    lapseMinute = minute;
+    if (skyLocation) refreshPlacedSky();
+    updateSkyReadout();
+  }
+  function refreshPlacedSky() {
+    if (!skyUsesPlace() || !skyLocation) return false;
+    const when = skyMoment();
+    if (!when) {
+      liveSky = skyInstant = null;
+      return false;
+    }
+    liveSky = celestialState(when, skyLocation.latitude, skyLocation.longitude);
+    skyInstant = when;
+    envFull = 2;
+    updateSkyReadout();
+    return true;
+  }
+  function refreshDynamicSky() {
+    if (P.skyMode === 'dynamic') refreshPlacedSky();
+  }
+  function weatherSmooth(a, b, v) {
+    const x = Math.max(0, Math.min(1, (v - a) / (b - a)));
+    return x * x * (3 - 2 * x);
+  }
+  function showDrivenSetting(key, value) {
+    const control = controls.get(key);
+    if (typeof DEFAULTS[key] === 'boolean') {
+      P[key] = value;
+      if (control) {
+        control.input.checked = value;
+        control.output.textContent = value ? control.onText : control.offText;
+      }
+      return;
+    }
+    P[key] = value;
+    if (!control) return;
+    const step = Number(control.input.step) || 0.01;
+    const shown = Math.round(value / step) * step;
+    const text = String(Number(shown.toFixed(4)));
+    if (control.output.textContent !== text) {
+      control.input.value = text;
+      control.output.textContent = text;
+    }
+  }
+  function updateDynamicClouds(dt) {
+    if (P.cloudMode !== 'dynamic') return;
+    cloudTime += dt;
+    const when = skyUsesPlace() && skyInstant ? skyInstant : new Date();
+    const hour = when.getHours() + when.getMinutes() / 60 + when.getSeconds() / 3600;
+    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(P.sunElev * D2R);
+    const elev = Math.asin(Math.max(-1, Math.min(1, sunY))) / D2R;
+    const daylight = weatherSmooth(-6, 10, elev);
+    const afternoon = Math.exp(-((hour - 15.2) ** 2) / 16);
+    const system = 0.5 + 0.5 * Math.sin(cloudTime * 0.0042);
+    const front = 0.5 + 0.5 * Math.sin(cloudTime * 0.0017 + 1.8);
+    const lowDir = (118 + 28 * Math.sin(cloudTime * 0.0011) + 360) % 360;
+    const lowSun = Math.exp(-((elev - 6) ** 2) / 180) * weatherSmooth(-3, 4, elev);
+    showDrivenSetting('cloudMotion', true);
+    showDrivenSetting('clouds', Math.min(0.92, 0.08 + 0.58 * afternoon * daylight + 0.24 * system * (0.3 + 0.7 * daylight)));
+    showDrivenSetting('cloudAltitude', 1.35 + 1.15 * afternoon * daylight);
+    showDrivenSetting('cloudScale', 0.8 + 0.45 * afternoon);
+    showDrivenSetting('cloudDensity', 1.3 + 2.4 * afternoon * (0.45 + 0.55 * daylight));
+    showDrivenSetting('cloudWindSpeed', 3 + 8 * daylight + 7 * system);
+    showDrivenSetting('cloudWindDir', lowDir);
+    showDrivenSetting('cloudEvolution', 0.18 + 0.85 * daylight * (0.4 + afternoon));
+    showDrivenSetting('veil', 0.06 + 0.48 * front);
+    showDrivenSetting('highCloudAltitude', 6.5 + 2.4 * front);
+    showDrivenSetting('highCloudScale', 0.85 + 0.55 * (1 - front));
+    showDrivenSetting('highCloudDensity', 0.35 + 0.85 * front);
+    showDrivenSetting('highCloudWindSpeed', 14 + 30 * (0.35 + 0.65 * front));
+    showDrivenSetting('highCloudWindDir', (lowDir + 26 + 12 * Math.sin(cloudTime * 0.0007)) % 360);
+    showDrivenSetting('cloudSoftness', 0.8 + 0.55 * (1 - daylight));
+    showDrivenSetting('cloudSilver', 0.2 + 1.45 * lowSun);
+    showDrivenSetting('cloudAmbient', 0.4 + 0.85 * daylight);
+  }
 
   function writeFrame(time) {
     const aspect = W / H;
@@ -579,14 +836,16 @@ async function main() {
     f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = 0;
     f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
     f[28] = fx; f[29] = fy; f[30] = fz; f[31] = 0;
-    const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
-    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
+    const dynamic = skyUsesPlace() && liveSky;
+    const sun = dynamic ? liveSky.sunDirection : horizonDirection(P.sunElev, P.sunAzim);
+    const moon = dynamic ? liveSky.moonDirection : horizonDirection(P.moonElev, P.moonAzim);
+    f[32] = sun[0]; f[33] = sun[1]; f[34] = sun[2]; f[35] = 14.0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
     f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
-    f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
+    f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0;
     // deep water body scatter colour (greenish coastal water), unresolved slope variance
     f[76] = 0.016 * P.turbidity; f[77] = 0.080 * P.turbidity; f[78] = 0.096 * P.turbidity; f[79] = 0.0024;
     f[80] = 0.035; f[81] = 0.120; f[82] = 0.085; f[83] = 2.6;
@@ -595,7 +854,35 @@ async function main() {
     f[89] = (13.558e-3 + 4.40e-3 * P.haze) * 1e-3;
     f[90] = (33.1e-3 + 4.40e-3 * P.haze) * 1e-3;
     f[91] = 1.1e-4;
-    f[92] = 1.5; f[93] = P.clouds; f[94] = 2.2; f[95] = time;
+    f[92] = P.cloudAltitude; f[93] = P.clouds; f[94] = P.cloudSoftness;
+    f[95] = 0;
+    f[96] = moon[0]; f[97] = moon[1]; f[98] = moon[2]; f[99] = P.moon ? P.moonBrightness : 0;
+    let moonLight = sun;
+    if (!dynamic) {
+      const phaseAngle = Math.acos(Math.max(-1, Math.min(1, P.moonPhase * 2 - 1)));
+      let tx = -moon[2], tz = moon[0];
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl; tz /= tl;
+      moonLight = [
+        -moon[0] * Math.cos(phaseAngle) + tx * Math.sin(phaseAngle),
+        -moon[1] * Math.cos(phaseAngle),
+        -moon[2] * Math.cos(phaseAngle) + tz * Math.sin(phaseAngle),
+      ];
+    }
+    f[100] = moonLight[0]; f[101] = moonLight[1]; f[102] = moonLight[2]; f[103] = P.moonSize;
+    const starDay = Math.trunc((skyInstant || new Date()).getTime() / 86400000);
+    const dynamicSeed = skyLocation
+      ? Math.abs(Math.trunc(skyLocation.latitude * 1000) * 31 + Math.trunc(skyLocation.longitude * 1000) * 17 + starDay)
+      : P.starSeed;
+    f[104] = P.stars ? P.starDensity : 0; f[105] = P.starBrightness;
+    f[106] = dynamic ? dynamicSeed : P.starSeed; f[107] = P.nightBrightness;
+    const pole = dynamic ? liveSky.poleDirection : [0, 1, 0];
+    f[108] = pole[0]; f[109] = pole[1]; f[110] = pole[2]; f[111] = 0;
+    f[112] = cloudScroll.lowX; f[113] = cloudScroll.lowZ; f[114] = 0; f[115] = cloudScroll.evolve;
+    f[116] = cloudScroll.highX; f[117] = cloudScroll.highZ; f[118] = 0; f[119] = P.highCloudScale;
+    f[120] = P.cloudScale; f[121] = P.highCloudAltitude; f[122] = P.cloudSoftness; f[123] = 0;
+    f[124] = P.cloudDensity; f[125] = P.highCloudDensity;
+    f[126] = P.cloudSilver; f[127] = P.cloudAmbient;
     device.queue.writeBuffer(frameUBO, 0, f);
   }
 
@@ -603,42 +890,762 @@ async function main() {
   // UI
   // --------------------------------------------------------------------------------------
   const panel = document.getElementById('panel');
-  function togglePanel() { panel.classList.toggle('hidden'); }
-  const SLIDERS = [
-    ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
-    ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
-    ['fetchKm', 'Fetch (km)', 5, 800, 1, 'spec'],
-    ['swellHs', 'Swell height (m)', 0, 4, 0.05, 'spec'],
-    ['swellLength', 'Swell wavelength (m)', 30, 300, 1, 'spec'],
-    ['swellDir', 'Swell direction (deg)', 0, 360, 1, 'spec'],
-    ['choppy', 'Choppiness', 0, 1.6, 0.01, 'spec'],
-    ['turbidity', 'Water turbidity', 0.2, 3, 0.01, ''],
-    ['foam', 'Foam', 0, 3, 0.01, ''],
-    ['sunElev', 'Sun elevation (deg)', -2, 60, 0.1, ''],
-    ['sunAzim', 'Sun azimuth (deg)', -180, 180, 0.5, ''],
-    ['haze', 'Haze', 0.5, 15, 0.1, 'lut'],
-    ['clouds', 'Low clouds', 0, 1, 0.01, ''],
-    ['veil', 'Cloud deck', 0, 1, 0.01, ''],
-    ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
-    ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
+  const settingsBtn = document.getElementById('settings');
+  function setPanelOpen(open) {
+    panel.classList.toggle('hidden', !open);
+    settingsBtn.setAttribute('aria-expanded', String(open));
+  }
+  function togglePanel() { setPanelOpen(panel.classList.contains('hidden')); }
+  function showPanel() { setPanelOpen(true); }
+  settingsBtn.addEventListener('click', (event) => { event.stopPropagation(); showPanel(); });
+  document.getElementById('close-settings').addEventListener('click', (event) => {
+    event.stopPropagation();
+    setPanelOpen(false);
+  });
+  const panelBody = document.getElementById('panel-body');
+  const BOOL_KEYS = new Set(['sound', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+    'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
+    'moon', 'stars', 'cloudMotion']);
+  const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
+    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode']);
+  const CLOUD_DRIVEN = [
+    'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
+    'cloudScale', 'cloudAltitude', 'clouds', 'cloudDensity',
+    'highCloudWindSpeed', 'highCloudWindDir', 'highCloudScale', 'highCloudAltitude',
+    'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
   ];
-  for (const [key, label, min, max, step, kind] of SLIDERS) {
+  let cloudManual = null;
+  let cloudTime = 0;
+  // Integrated advection. Multiplying wind by the clock jumps the field whenever the
+  // wind changes, and that clock also wraps with the wave spectrum.
+  const cloudScroll = { lowX: 0, lowZ: 0, highX: 0, highZ: 0, evolve: 0 };
+  function advanceCloudMotion(dt) {
+    if (!P.cloudMotion || dt <= 0) return;
+    const low = P.cloudWindDir * D2R;
+    const lowSpeed = P.cloudWindSpeed * 0.001;
+    cloudScroll.lowX += Math.sin(low) * lowSpeed * dt;
+    cloudScroll.lowZ += -Math.cos(low) * lowSpeed * dt;
+    cloudScroll.evolve += P.cloudEvolution * dt;
+    const high = P.highCloudWindDir * D2R;
+    const highSpeed = P.highCloudWindSpeed * 0.001;
+    cloudScroll.highX += Math.sin(high) * highSpeed * dt;
+    cloudScroll.highZ += -Math.cos(high) * highSpeed * dt;
+  }
+  const SETTINGS_KEY = 'web-ocean-settings-v2';
+  const SECTIONS = [
+    { title: 'General', groups: [
+      { settings: [
+        ['showButtons', 'Onscreen buttons', 'toggle', 'Show', 'Hide'],
+        ['showInfo', 'Onscreen information', 'toggle', 'Show', 'Hide'],
+      ] },
+    ] },
+    { title: 'Clock', groups: [
+      { title: 'Display', settings: [
+        ['clock', 'Clock', 'toggle', 'On', 'Off'],
+        ['clock24h', '24-hour time', 'toggle', 'On', 'Off'],
+        ['clockSeconds', 'Show seconds', 'toggle', 'Show', 'Hide'],
+        ['clockDate', 'Show date', 'toggle', 'Show', 'Hide'],
+      ] },
+      { title: 'Appearance', settings: [
+        ['clockStyle', 'Style', 'select', [
+          ['modern', 'Modern'],
+          ['mono', 'Monospace'],
+          ['classic', 'Classic'],
+        ]],
+        ['clockPosition', 'Position', 'select', [
+          ['top-left', 'Top left'],
+          ['top-center', 'Top center'],
+          ['top-right', 'Top right'],
+          ['bottom-left', 'Bottom left'],
+          ['bottom-center', 'Bottom center'],
+          ['bottom-right', 'Bottom right'],
+        ]],
+        ['clockSize', 'Size (px)', 32, 144, 1, 'clock'],
+        ['clockColor', 'Color', 'color'],
+        ['clockOpacity', 'Opacity', 0.2, 1, 0.01, 'clock'],
+        ['clockBackground', 'Background', 0, 0.8, 0.01, 'clock'],
+      ] },
+    ] },
+    { title: 'Weather', groups: [
+      { title: 'Location and updates', settings: [
+        ['weather', 'Weather widget', 'toggle', 'Show', 'Hide'],
+        ['weatherZip', 'US ZIP code', 'text', '30265'],
+        ['weatherRefresh', 'Refresh (minutes)', 5, 60, 5, 'weather'],
+        ['weatherUnit', 'Units', 'select', [
+          ['fahrenheit', 'Fahrenheit / mph'],
+          ['celsius', 'Celsius / km/h'],
+        ]],
+        ['weatherPosition', 'Position', 'select', [
+          ['top-left', 'Top left'],
+          ['top-right', 'Top right'],
+          ['bottom-left', 'Bottom left'],
+          ['bottom-right', 'Bottom right'],
+        ]],
+      ] },
+      { title: 'Information', settings: [
+        ['weatherTemp', 'Current temperature', 'toggle', 'Show', 'Hide'],
+        ['weatherFeels', 'Feels like', 'toggle', 'Show', 'Hide'],
+        ['weatherPrecip', 'Precipitation', 'toggle', 'Show', 'Hide'],
+        ['weatherHumidity', 'Humidity', 'toggle', 'Show', 'Hide'],
+        ['weatherWind', 'Wind', 'toggle', 'Show', 'Hide'],
+        ['weatherForecast', 'Next 3 hours', 'toggle', 'Show', 'Hide'],
+        ['weatherAlerts', 'Severe alerts', 'toggle', 'Show', 'Hide'],
+      ] },
+    ] },
+    { title: 'Ocean', groups: [
+      { title: 'Wind', settings: [
+        ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
+        ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
+        ['fetchKm', 'Fetch (km)', 5, 800, 1, 'spec'],
+      ] },
+      { title: 'Swell', settings: [
+        ['swellHs', 'Swell height (m)', 0, 4, 0.05, 'spec'],
+        ['swellLength', 'Swell wavelength (m)', 30, 300, 1, 'spec'],
+        ['swellDir', 'Swell direction (deg)', 0, 360, 1, 'spec'],
+      ] },
+      { title: 'Water', settings: [
+        ['choppy', 'Choppiness', 0, 1.6, 0.01, 'spec'],
+        ['turbidity', 'Water turbidity', 0.2, 3, 0.01, ''],
+        ['foam', 'Foam', 0, 3, 0.01, ''],
+      ] },
+    ] },
+    { title: 'Sound', groups: [
+      { title: 'Playback', settings: [
+        ['sound', 'Sound', 'toggle', 'On', 'Off'],
+        ['audioVolume', 'Volume', 0, 1, 0.01, 'audio'],
+      ] },
+      { title: 'Layers', settings: [
+        ['audioRumble', 'Swell rumble', 0, 2, 0.01, 'audio'],
+        ['audioWash', 'Surface wash', 0, 2, 0.01, 'audio'],
+        ['audioHiss', 'Crest hiss', 0, 2, 0.01, 'audio'],
+      ] },
+      { title: 'Motion', settings: [
+        ['audioSync', 'Wave sync', 0, 2, 0.01, 'audio'],
+        ['audioStereo', 'Stereo width', 0, 2, 0.01, 'audio'],
+      ] },
+    ] },
+    { title: 'Sky', groups: [
+      { title: 'Mode', settings: [
+        ['skyMode', 'Sky behavior', 'select', [
+          ['static', 'Static'],
+          ['dynamic', 'Dynamic / real-time'],
+          ['dated', 'Date and time'],
+          ['lapse', 'Time lapse'],
+        ]],
+        ['zipCode', 'US ZIP code', 'text', '30265'],
+        ['skyWhen', 'View at', 'datetime'],
+        ['skyLapseStart', 'Start at', 'datetime'],
+        ['lapsePace', 'Sky minutes per second', 1, 100, 1, 'lapse'],
+      ] },
+      { title: 'Sun', settings: [
+        ['sunElev', 'Sun elevation (deg)', -18, 90, 0.1, ''],
+        ['sunAzim', 'Sun azimuth (deg)', -180, 180, 0.5, ''],
+      ] },
+      { title: 'Moon', settings: [
+        ['moon', 'Moon', 'toggle', 'Show', 'Hide'],
+        ['moonElev', 'Moon elevation (deg)', -18, 90, 0.1, ''],
+        ['moonAzim', 'Moon azimuth (deg)', -180, 180, 0.5, ''],
+        ['moonPhase', 'Phase (0 new, 1 full)', 0, 1, 0.01, ''],
+        ['moonSize', 'Size (1 = true size)', 0.5, 6, 0.05, ''],
+        ['moonBrightness', 'Brightness', 0, 12, 0.1, ''],
+      ] },
+      { title: 'Stars', settings: [
+        ['stars', 'Stars', 'toggle', 'Show', 'Hide'],
+        ['starDensity', 'Density', 0, 1, 0.01, ''],
+        ['starBrightness', 'Brightness', 0, 5, 0.05, ''],
+        ['starSeed', 'Random seed', 0, 9999, 1, ''],
+        ['nightBrightness', 'Night sky brightness', 0, 4, 0.05, ''],
+      ] },
+      { title: 'Clouds', settings: [
+        ['cloudMode', 'Cloud behavior', 'select', [
+          ['static', 'Static'],
+          ['dynamic', 'Dynamic / real-world'],
+        ]],
+      ], groups: [
+        { title: 'Motion', settings: [
+          ['cloudMotion', 'Motion', 'toggle', 'On', 'Off'],
+          ['cloudWindSpeed', 'Low wind speed (m/s)', 0, 40, 0.1, ''],
+          ['cloudWindDir', 'Low wind direction (deg)', 0, 360, 1, ''],
+          ['highCloudWindSpeed', 'High wind speed (m/s)', 0, 80, 0.1, ''],
+          ['highCloudWindDir', 'High wind direction (deg)', 0, 360, 1, ''],
+          ['cloudEvolution', 'Shape evolution', 0, 2, 0.01, ''],
+        ] },
+        { title: 'Low clouds', settings: [
+          ['clouds', 'Coverage', 0, 1, 0.01, ''],
+          ['cloudAltitude', 'Altitude (km)', 0.5, 5, 0.05, ''],
+          ['cloudScale', 'Feature scale', 0.4, 3, 0.01, ''],
+          ['cloudDensity', 'Optical density', 0.2, 6, 0.05, ''],
+        ] },
+        { title: 'High clouds', settings: [
+          ['veil', 'Coverage', 0, 1, 0.01, ''],
+          ['highCloudAltitude', 'Altitude (km)', 4, 14, 0.1, ''],
+          ['highCloudScale', 'Feature scale', 0.4, 3, 0.01, ''],
+          ['highCloudDensity', 'Optical density', 0.1, 3, 0.05, ''],
+        ] },
+        { title: 'Lighting', settings: [
+          ['cloudSoftness', 'Edge softness', 0.4, 2.5, 0.01, ''],
+          ['cloudSilver', 'Silver lining', 0, 2, 0.01, ''],
+          ['cloudAmbient', 'Ambient light', 0, 2, 0.01, ''],
+        ] },
+      ] },
+      { title: 'Atmosphere', settings: [
+        ['haze', 'Haze', 0.5, 15, 0.1, 'lut'],
+        ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
+        ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
+      ] },
+    ] },
+  ];
+  const RANGES = new Map();
+  const CHOICES = new Map();
+  function eachSetting(groups, visit) {
+    for (const group of groups || []) {
+      for (const setting of group.settings || []) visit(setting);
+      eachSetting(group.groups, visit);
+    }
+  }
+  for (const section of SECTIONS) eachSetting(section.groups, (setting) => {
+    if (setting[2] === 'select') CHOICES.set(setting[0], new Set(setting[3].map((option) => option[0])));
+    else if (typeof setting[2] === 'number') RANGES.set(setting[0], [setting[2], setting[3]]);
+  });
+  function coerceSetting(key, raw) {
+    if (BOOL_KEYS.has(key)) return booleanSetting(raw);
+    if (CHOICES.has(key)) return CHOICES.get(key).has(raw) ? raw : undefined;
+    if (key === 'zipCode' || key === 'weatherZip') {
+      return typeof raw === 'string' && (/^\d{5}$/.test(raw.trim()) || raw.trim() === '') ? raw.trim() : undefined;
+    }
+    if (key === 'skyWhen' || key === 'skyLapseStart') {
+      if (typeof raw !== 'string' || raw.trim() === '') return '';
+      const value = raw.trim().slice(0, 16);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return undefined;
+      return Number.isNaN(new Date(value).getTime()) ? undefined : value;
+    }
+    if (key === 'clockColor') return typeof raw === 'string' && /^#[0-9a-f]{6}$/i.test(raw) ? raw : undefined;
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n)) return undefined;
+    const range = RANGES.get(key);
+    return range ? Math.min(range[1], Math.max(range[0], n)) : n;
+  }
+  function restoreSettings() {
+    let data = null;
+    try { data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch { /* unavailable */ }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+    for (const key of Object.keys(P)) {
+      if (!Object.hasOwn(data, key)) continue;
+      const value = coerceSetting(key, data[key]);
+      if (value !== undefined) P[key] = value;
+    }
+  }
+  function rememberSettings() {
+    const changed = {};
+    for (const key of Object.keys(P)) {
+      const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key] : P[key];
+      if (stored !== DEFAULTS[key]) changed[key] = stored;
+    }
+    try {
+      localStorage.removeItem('web-ocean-settings');
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(changed));
+    } catch { /* unavailable */ }
+  }
+  restoreSettings();
+  for (const key of Object.keys(P)) {
+    if (!qs.has(key)) continue;
+    const value = coerceSetting(key, qs.get(key));
+    if (value !== undefined) P[key] = value;
+  }
+  if (qs.get('ui') === '0') P.showButtons = P.showInfo = false;
+  const controls = new Map();
+  const skyReadout = document.getElementById('sky-readout');
+  function updateSkyReadout() {
+    const show = P.showInfo && P.skyMode === 'lapse' && skyInstant;
+    skyReadout.hidden = !show;
+    if (!show) return;
+    const when = skyInstant.toLocaleString([], {
+      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: !P.clock24h,
+    });
+    const place = skyLocation?.name || (P.zipCode ? `ZIP ${P.zipCode}` : '');
+    const text = place ? `${when} · ${place}` : when;
+    if (skyReadout.textContent !== text) skyReadout.textContent = text;
+  }
+  function applyShowInfo() {
+    document.getElementById('hud').style.display = P.showInfo ? '' : 'none';
+    updateSkyReadout();
+    document.getElementById('toolbar').style.display = P.showButtons ? '' : 'none';
+    panel.style.top = P.showButtons ? '50px' : '10px';
+    panel.style.maxHeight = P.showButtons ? 'calc(100vh - 60px)' : 'calc(100vh - 20px)';
+  }
+  const clockWidget = document.getElementById('clock-widget');
+  const clockTime = clockWidget.querySelector('.clock-time');
+  const clockDate = clockWidget.querySelector('.clock-date');
+  function updateClock() {
+    const now = new Date();
+    clockTime.textContent = now.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: P.clockSeconds ? '2-digit' : undefined,
+      hour12: !P.clock24h,
+    });
+    clockDate.textContent = P.clockDate
+      ? now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+      : '';
+    clockWidget.dateTime = now.toISOString();
+  }
+  function applyClock() {
+    clockWidget.hidden = !P.clock;
+    clockWidget.dataset.style = P.clockStyle;
+    clockWidget.style.fontSize = P.clockSize + 'px';
+    clockWidget.style.color = P.clockColor;
+    clockWidget.style.opacity = P.clockOpacity;
+    clockWidget.style.backgroundColor = `rgba(11, 15, 20, ${P.clockBackground})`;
+    clockWidget.style.textShadow = P.clockBackground < 0.35 ? '0 2px 8px #000c' : 'none';
+    clockWidget.style.top = clockWidget.style.right = clockWidget.style.bottom =
+      clockWidget.style.left = clockWidget.style.transform = '';
+    const edge = '32px';
+    if (P.clockPosition.startsWith('top')) clockWidget.style.top = P.clockPosition === 'top-right' ? '58px' : edge;
+    else clockWidget.style.bottom = edge;
+    if (P.clockPosition.endsWith('left')) clockWidget.style.left = edge;
+    else if (P.clockPosition.endsWith('right')) clockWidget.style.right = edge;
+    else {
+      clockWidget.style.left = '50%';
+      clockWidget.style.transform = 'translateX(-50%)';
+    }
+    updateClock();
+    updateSkyReadout();
+  }
+  function setDisclosure(item, open) {
+    item.querySelector(':scope > button').setAttribute('aria-expanded', String(open));
+    item.querySelector(':scope > div').hidden = !open;
+  }
+  function addDisclosure(parent, title, kind) {
+    const item = document.createElement('div');
+    item.className = kind;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = kind + '-toggle';
+    button.textContent = title;
+    button.setAttribute('aria-expanded', 'false');
+    const body = document.createElement('div');
+    body.className = kind + '-body';
+    body.hidden = true;
+    item.append(button, body);
+    parent.appendChild(item);
+    button.addEventListener('click', () => {
+      const willOpen = button.getAttribute('aria-expanded') !== 'true';
+      for (const sibling of parent.children) {
+        if (sibling.classList.contains(kind)) setDisclosure(sibling, sibling === item && willOpen);
+      }
+    });
+    return body;
+  }
+  function addSlider(parent, key, label, min, max, step, kind) {
     const row = document.createElement('label');
     const name = document.createElement('span'); name.textContent = label;
     const val = document.createElement('output'); val.textContent = String(P[key]);
     const inp = document.createElement('input');
     Object.assign(inp, { type: 'range', min, max, step, value: P[key] });
-    inp.addEventListener('input', () => {
-      P[key] = Number(inp.value); val.textContent = inp.value;
-      if (kind === 'spec') needSpectrum = true;
-      if (kind === 'lut') needLUT = true;
-      envFull = 2;
-    });
+    inp.addEventListener('input', () => commitSetting(key, Number(inp.value)));
     row.append(name, inp, val);
-    panel.appendChild(row);
+    parent.appendChild(row);
+    controls.set(key, { input: inp, output: val, row, min, max, kind });
   }
-  if (qs.get('ui') === '0') { document.getElementById('hud').style.display = 'none'; panel.classList.add('hidden'); }
-  for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
+  function addSelect(parent, key, label, options) {
+    const row = document.createElement('label');
+    row.className = 'select';
+    const name = document.createElement('span'); name.textContent = label;
+    const inp = document.createElement('select');
+    for (const [value, text] of options) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      inp.appendChild(option);
+    }
+    inp.value = P[key];
+    inp.addEventListener('change', () => commitSetting(key, inp.value));
+    row.append(name, inp);
+    parent.appendChild(row);
+    controls.set(key, { input: inp, row, kind: 'string', values: new Set(options.map((o) => o[0])) });
+  }
+  function addColor(parent, key, label) {
+    const row = document.createElement('label');
+    row.className = 'color';
+    const name = document.createElement('span'); name.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'color';
+    inp.value = P[key];
+    inp.addEventListener('input', () => commitSetting(key, inp.value));
+    row.append(name, inp);
+    parent.appendChild(row);
+    controls.set(key, { input: inp, row, kind: 'color' });
+  }
+  function addText(parent, key, label, placeholder) {
+    const row = document.createElement('label');
+    row.className = 'text';
+    const name = document.createElement('span'); name.textContent = label;
+    const inp = document.createElement('input');
+    Object.assign(inp, { type: 'text', value: P[key], placeholder, inputMode: 'numeric', maxLength: 5 });
+    inp.autocomplete = 'postal-code';
+    inp.addEventListener('change', () => {
+      if (!commitSetting(key, inp.value)) {
+        inp.value = P[key];
+        note('Enter a valid 5-digit US ZIP code');
+      }
+    });
+    row.append(name, inp);
+    parent.appendChild(row);
+    controls.set(key, { input: inp, row, kind: 'text' });
+  }
+  function addDateTime(parent, key, label) {
+    const row = document.createElement('label');
+    row.className = 'datetime';
+    const name = document.createElement('span'); name.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'datetime-local';
+    inp.value = P[key];
+    inp.addEventListener('change', () => {
+      if (!commitSetting(key, inp.value)) {
+        inp.value = P[key];
+        note('Choose a valid date and time');
+      }
+    });
+    row.append(name, inp);
+    parent.appendChild(row);
+    controls.set(key, { input: inp, row, kind: 'datetime' });
+  }
+  function addToggle(parent, key, label, onText, offText) {
+    const row = document.createElement('label');
+    row.className = 'toggle';
+    const name = document.createElement('span'); name.textContent = label;
+    const val = document.createElement('output'); val.textContent = P[key] ? onText : offText;
+    const inp = document.createElement('input');
+    inp.type = 'checkbox';
+    inp.checked = P[key];
+    inp.addEventListener('change', () => commitSetting(key, inp.checked));
+    const choice = document.createElement('span');
+    choice.className = 'choice';
+    choice.append(inp, val);
+    row.append(name, choice);
+    parent.appendChild(row);
+    const control = { input: inp, output: val, row, kind: 'bool', onText, offText };
+    controls.set(key, control);
+    if (key === 'sound') soundControl = control;
+  }
+  function addSetting(host, setting) {
+    if (setting[2] === 'toggle') addToggle(host, setting[0], setting[1], setting[3], setting[4]);
+    else if (setting[2] === 'select') addSelect(host, setting[0], setting[1], setting[3]);
+    else if (setting[2] === 'color') addColor(host, setting[0], setting[1]);
+    else if (setting[2] === 'text') addText(host, setting[0], setting[1], setting[3]);
+    else if (setting[2] === 'datetime') addDateTime(host, setting[0], setting[1]);
+    else addSlider(host, ...setting);
+  }
+  function addGroups(parent, groups, kind) {
+    let firstGroup = null;
+    for (const group of groups || []) {
+      const host = group.title ? addDisclosure(parent, group.title, kind) : parent;
+      if (group.title && !firstGroup) firstGroup = host;
+      for (const setting of group.settings || []) addSetting(host, setting);
+      addGroups(host, group.groups, 'subgroup');
+    }
+    if (firstGroup) setDisclosure(firstGroup.parentElement, true);
+  }
+  const sectionBodies = [];
+  for (const section of SECTIONS) {
+    const body = addDisclosure(panelBody, section.title, 'section');
+    sectionBodies.push(body);
+    addGroups(body, section.groups, 'group');
+    if (section.title === 'General') addShortcuts(body);
+  }
+  function addShortcuts(parent) {
+    const wrap = document.createElement('div');
+    wrap.className = 'shortcuts';
+    const heading = document.createElement('h3');
+    heading.textContent = 'Shortcuts';
+    const list = document.createElement('dl');
+    for (const [key, action] of [
+      ['F1', 'Show settings'],
+      ['Esc', 'Close settings'],
+      ['H', 'Show or hide settings'],
+      ['M', 'Turn sound on or off'],
+      ['W A S D', 'Move'],
+      ['Space or E', 'Move up'],
+      ['Q or C', 'Move down'],
+      ['Shift', 'Move five times faster'],
+      ['Mouse wheel', 'Move up or down'],
+      ['Left drag', 'Look around'],
+      ['Left and right click', 'Reset the view'],
+    ]) {
+      const term = document.createElement('dt');
+      term.textContent = key;
+      const detail = document.createElement('dd');
+      detail.textContent = action;
+      list.append(term, detail);
+    }
+    wrap.append(heading, list);
+    parent.appendChild(wrap);
+  }
+  setDisclosure(sectionBodies[0].parentElement, true);
+  applyShowInfo();
+  applyClock();
+  applySkyMode();
+  applyCloudMode();
+  setInterval(updateClock, 250);
+  setInterval(refreshDynamicSky, 30000);
+  if (P.sound) oceanAudio.setEnabled(true);
+
+  const io = document.createElement('div');
+  io.className = 'io';
+  const exportBtn = document.createElement('button');
+  exportBtn.type = 'button';
+  exportBtn.id = 'export-settings';
+  exportBtn.textContent = 'Export';
+  const importBtn = document.createElement('button');
+  importBtn.type = 'button';
+  importBtn.id = 'import-settings';
+  importBtn.textContent = 'Import';
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.id = 'reset-settings';
+  resetBtn.textContent = 'Reset to defaults';
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.id = 'import-file';
+  fileInput.accept = 'application/json,.json';
+  fileInput.hidden = true;
+  io.append(exportBtn, importBtn, resetBtn, fileInput);
+  const status = document.createElement('div');
+  status.className = 'status';
+  status.setAttribute('role', 'status');
+  panelBody.append(io, status);
+
+  let statusToken = 0;
+  function note(text) {
+    status.textContent = text;
+    const token = ++statusToken;
+    setTimeout(() => { if (token === statusToken) status.textContent = ''; }, 4000);
+  }
+  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note);
+  function applyWeather(fetchNow = false) {
+    weatherWidget.update(P, fetchNow);
+  }
+  applyWeather(true);
+  const GEO_KEY = 'web-ocean-zip-location';
+  let geoRequest = 0;
+  function applyCloudMode() {
+    const dynamic = P.cloudMode === 'dynamic';
+    if (dynamic && !cloudManual) {
+      cloudManual = {};
+      for (const key of CLOUD_DRIVEN) cloudManual[key] = P[key];
+    }
+    if (!dynamic && cloudManual) {
+      for (const key of CLOUD_DRIVEN) showDrivenSetting(key, cloudManual[key]);
+      cloudManual = null;
+    }
+    for (const key of CLOUD_DRIVEN) setSettingVisible(key, !dynamic);
+    refreshModeGroups();
+    if (dynamic) updateDynamicClouds(0);
+  }
+  function setSettingVisible(key, visible) {
+    const control = controls.get(key);
+    if (!control?.row) return;
+    control.row.hidden = !visible;
+    control.input.disabled = !visible;
+    control.row.classList.toggle('disabled', !visible);
+    if (control.input.required !== undefined) control.input.required = visible;
+  }
+  function refreshModeGroups() {
+    const items = [...panelBody.querySelectorAll('.subgroup, .group')].reverse();
+    for (const item of items) {
+      const body = item.querySelector(':scope > div');
+      item.hidden = ![...body.children].some((child) => !child.hidden);
+    }
+  }
+  function applySkyMode(resolveLocation = false) {
+    const placed = skyUsesPlace();
+    const dated = P.skyMode === 'dated';
+    const lapse = P.skyMode === 'lapse';
+    for (const key of ['sunElev', 'sunAzim', 'moonElev', 'moonAzim', 'moonPhase', 'starSeed']) {
+      setSettingVisible(key, !placed);
+    }
+    setSettingVisible('zipCode', placed);
+    setSettingVisible('skyWhen', dated);
+    setSettingVisible('skyLapseStart', lapse);
+    setSettingVisible('lapsePace', lapse);
+    if (lapse) resetTimeLapse();
+    if (dated && !P.skyWhen) {
+      P.skyWhen = localDateTimeValue();
+      const when = controls.get('skyWhen');
+      if (when) when.input.value = P.skyWhen;
+      if (resolveLocation) rememberSettings();
+    }
+    refreshModeGroups();
+    if (!placed) {
+      liveSky = skyInstant = null;
+      if (framedSky) restoreDefaultView();
+      envFull = 2;
+    } else {
+      if (!framedSky) frameSkyView();
+      if (resolveLocation) resolveZipCode();
+    }
+  }
+  async function resolveZipCode() {
+    const zip = P.zipCode;
+    if (!skyUsesPlace()) return;
+    if (P.skyMode === 'dated' && !skyMoment()) {
+      skyLocation = liveSky = skyInstant = null;
+      note('Choose the date and time to view');
+      return;
+    }
+    if (!/^\d{5}$/.test(zip)) {
+      skyLocation = liveSky = skyInstant = null;
+      note('This sky mode requires a 5-digit US ZIP code');
+      return;
+    }
+    const request = ++geoRequest;
+    try {
+      let location = null;
+      try {
+        const cached = JSON.parse(localStorage.getItem(GEO_KEY) || 'null');
+        if (cached?.zip === zip && Number.isFinite(cached.latitude) && Number.isFinite(cached.longitude)) location = cached;
+      } catch { /* unavailable */ }
+      if (!location) {
+        note('Finding ZIP code…');
+        const response = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
+        if (!response.ok) throw new Error('ZIP code not found');
+        const data = await response.json();
+        const place = data.places?.[0];
+        location = {
+          zip,
+          latitude: Number(place?.latitude),
+          longitude: Number(place?.longitude),
+          name: [place?.['place name'], place?.['state abbreviation']].filter(Boolean).join(', '),
+        };
+        if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) throw new Error('Invalid location');
+        try { localStorage.setItem(GEO_KEY, JSON.stringify(location)); } catch { /* unavailable */ }
+      }
+      if (request !== geoRequest || !skyUsesPlace() || P.zipCode !== zip) return;
+      skyLocation = location;
+      if (!refreshPlacedSky()) return;
+      const when = P.skyMode === 'dated' ? ` at ${P.skyWhen.replace('T', ' ')}`
+        : P.skyMode === 'lapse' ? ` from ${P.skyLapseStart.replace('T', ' ')}` : '';
+      note(`${location.name || zip}${when}`);
+    } catch {
+      if (request !== geoRequest) return;
+      skyLocation = liveSky = skyInstant = null;
+      note('Could not locate that ZIP code');
+    }
+  }
+  if (skyUsesPlace()) resolveZipCode();
+  function commitSetting(key, value) {
+    if (!Object.hasOwn(P, key)) return false;
+    const control = controls.get(key);
+    if (BOOL_KEYS.has(key)) {
+      if (typeof value !== 'boolean') return false;
+      P[key] = value;
+      if (control) {
+        control.input.checked = value;
+        control.output.textContent = value ? control.onText : control.offText;
+      }
+      if (key === 'sound') oceanAudio.setEnabled(value);
+      if (key === 'showInfo' || key === 'showButtons') applyShowInfo();
+      if (key.startsWith('clock')) applyClock();
+      if (key.startsWith('weather')) applyWeather();
+      if (key === 'moon' || key === 'stars' || key === 'cloudMotion') envFull = 2;
+      rememberSettings();
+      return true;
+    }
+    if (STRING_KEYS.has(key)) {
+      value = coerceSetting(key, value);
+      if (value === undefined) return false;
+      P[key] = value;
+      if (control) control.input.value = value;
+      if (key.startsWith('clock')) applyClock();
+      if (key.startsWith('weather')) applyWeather(key === 'weatherZip' || key === 'weatherUnit');
+      if (key === 'skyMode') applySkyMode(true);
+      if (key === 'cloudMode') applyCloudMode();
+      if (key === 'skyLapseStart') resetTimeLapse();
+      if (key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') resolveZipCode();
+      if (key === 'skyMode' || key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') envFull = 2;
+      rememberSettings();
+      return true;
+    }
+    if (!Number.isFinite(value)) return false;
+    if (control && control.kind !== 'bool') {
+      value = Math.min(control.max, Math.max(control.min, value));
+      control.input.value = String(value);
+      value = Number(control.input.value);
+      control.output.textContent = control.input.value;
+    }
+    P[key] = value;
+    const kind = control ? control.kind : (key === 'swellSpread' ? 'spec' : '');
+    if (kind === 'spec') needSpectrum = true;
+    if (kind === 'lut') needLUT = true;
+    if (kind === 'clock') applyClock();
+    if (kind === 'weather') applyWeather();
+    if (kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
+    rememberSettings();
+    return true;
+  }
+  function booleanSetting(raw) {
+    if (typeof raw === 'boolean') return raw;
+    if (raw === 1 || raw === 0) return Boolean(raw);
+    if (typeof raw !== 'string') return undefined;
+    const value = raw.trim().toLowerCase();
+    if (value === '1' || value === 'true' || value === 'on') return true;
+    if (value === '0' || value === 'false' || value === 'off') return false;
+    return undefined;
+  }
+  function exportSettings() {
+    const blob = new Blob([JSON.stringify(P, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ocean-settings.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    note('Exported settings');
+  }
+  function importSettings(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      note('Settings file must be a JSON object');
+      return;
+    }
+    let count = 0;
+    for (const key of Object.keys(P)) {
+      if (!Object.hasOwn(data, key)) continue;
+      const value = BOOL_KEYS.has(key) ? booleanSetting(data[key])
+        : STRING_KEYS.has(key) ? data[key] : Number(data[key]);
+      if (commitSetting(key, value)) count++;
+    }
+    note(count ? `Imported ${count} setting${count === 1 ? '' : 's'}` : 'No recognized settings');
+  }
+  function resetAll() {
+    cloudManual = null;
+    for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
+    Object.assign(cam, CAM_DEFAULT);
+    note('Reset to defaults');
+  }
+  exportBtn.addEventListener('click', exportSettings);
+  importBtn.addEventListener('click', () => fileInput.click());
+  resetBtn.addEventListener('click', resetAll);
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      importSettings(JSON.parse(text));
+    } catch {
+      note('Could not read that settings file');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+
+  if (qs.get('ui') === '0') {
+    document.getElementById('hud').style.display = 'none';
+    document.getElementById('toolbar').style.display = 'none';
+    panel.classList.add('hidden');
+  }
 
   const hudFps = document.getElementById('fps');
 
@@ -718,11 +1725,16 @@ async function main() {
         (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}`;
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
+    updateDynamicClouds(dt);
+    advanceTimeLapse(dt);
     if (fixedDt) dt = fixedDt;
+    advanceCloudMotion(dt);
     updateCamera(dt);
     simTime += dt;
     if (simTime > LOOP) simTime -= LOOP;
     frameIndex++;
+    audioWaterH += (waterH - audioWaterH) * Math.min(1, dt * 12);
+    oceanAudio.update(simTime, audioWaterH, dt, cam, P);
 
     writeFrame(simTime);
     writeSimStatic();

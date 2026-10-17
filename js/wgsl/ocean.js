@@ -29,12 +29,12 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   // edge functions at this pixel (uniform control flow, so fwidth is valid)
   let hl = hitLayer(d2, F.cloudP.x);
   let el = lowEdge(hl.q, hl.t * pixAng / hl.mu, 7);
-  let hh = hitLayer(d2, 4.5);
+  let hh = hitLayer(d2, F.cloudShape.y);
   let eh = highEdge(hh.q, hh.t * pixAng / hh.mu, 6);
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  let L = (skyAtmo(d2) + nightSky(d2, pixAng)) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
   return vec4f(L, 1.0);
 }
 `;

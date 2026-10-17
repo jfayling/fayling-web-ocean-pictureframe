@@ -27,17 +27,56 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 
 | Input | Action |
 |---|---|
-| Click the canvas | Capture the mouse (Esc releases it). Holding the right mouse button also works. |
-| Mouse | Look around |
+| Hold left mouse button and drag | Look around |
+| Left and right mouse buttons together | Reset to the default view |
 | W A S D | Move |
-| Space or E / Q or C | Up / down |
-| Shift | 5x speed |
-| Mouse wheel | Change base speed |
-| H | Settings panel: wind, swell, choppiness, turbidity, foam, sun, haze, clouds, exposure, bloom |
+| Space or E / Q or C, or the mouse wheel | Up / down |
+| Shift | 5x movement speed |
+| F1 or Settings button | Show the settings panel |
+| Esc or the × button | Close the settings panel |
+| H | Show or hide the settings panel. General, Clock, Ocean, Sound, and Sky open one at a time, and their groups do the same. |
+| M, Sound button, or Sound setting | Toggle procedural ocean audio |
 
 The camera keeps itself above the displaced water surface, so waves never pass through it.
 
-URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, `ui=0` hides the HUD, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
+Ocean audio is generated in the browser with the Web Audio API, so there are no sound files
+to download. Low swell, surface wash, and crest hiss are mixed from filtered noise. Their
+levels follow the simulated water height under the camera, while wind, foam, camera altitude,
+and the volume setting shape the result. Swell rumble, surface wash, crest hiss, wave sync, and
+stereo width can be adjusted separately. The Sound checkbox, Sound button, and M shortcut all
+control the same setting. The Sound and Settings buttons sit together at the top right and use the same surface as the settings panel. General includes the keyboard and mouse shortcuts plus two checkboxes: Onscreen buttons shows the Sound and Settings buttons (on by default), and Onscreen information shows the frame rate, control help, and, during a time lapse, the rendered date, time, and place (off by default).
+
+The Clock overlay is enabled by default for large-screen displays and uses 12-hour time with the date shown unless changed. Its settings control 12/24-hour
+time, seconds, date, type style, size, colour, screen position, opacity, and background. It is
+independent of Onscreen information, so the controls and diagnostics can be hidden while the
+clock remains visible.
+
+The Weather overlay is also enabled by default and uses ZIP code 30265. It shows a graphical current
+condition, temperature, feels-like temperature, precipitation amount and probability, humidity,
+wind, and the next three hourly precipitation chances. A small timestamp shows when those conditions were last received. Each item can be shown or hidden, units and
+screen position are selectable, and the refresh interval defaults to 15 minutes. Active U.S. National
+Weather Service alerts appear above the card with a high-contrast warning treatment; severe and
+extreme alerts use red. Current conditions come from Open-Meteo, while ZIP locations are resolved
+through `api.zippopotam.us`.
+
+Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit. Reset to defaults replaces the saved session with the built-in values.
+
+Sky behavior can be Static, Dynamic, Date and time, or Time lapse, and it starts in Dynamic. The ZIP code defaults to 30265. Static mode exposes the sun, moon, lunar phase,
+stars, atmosphere, cloud, exposure, and bloom controls. Dynamic and Date and time modes hide the sun position, moon position, phase, and star seed they calculate, and require a five-digit
+US ZIP code and resolve and cache its latitude/longitude through `api.zippopotam.us`. Dynamic mode
+updates the sun and moon from the current time every 30 seconds. Date and time mode uses the same
+place calculation for a date and local time chosen in the settings, and it stays on that moment until
+the selection changes. Time lapse uses that same calculation, beginning at January 1, 2026, 12:00 AM unless another start is chosen. The pace is how many minutes of sky time pass each real second. It defaults to 20, so one real second advances the sky by 20 minutes, and the slider runs from 1 to 100. After a full year the sky returns to the chosen start and repeats. When Onscreen information is enabled, the display shows the date, time, and place currently being rendered. These modes turn the view toward the sun and moon's daily arc, so they travel
+across the picture instead of passing behind the camera. The moon remains visible while it is above
+the horizon, including during daylight. Its phase, the angle of its lit side, and the tilt of its face
+come from the configured date, time, and place. It shows the near-side maria and bright craters, faint
+earthshine, and reddening near the horizon. The Moon size setting is relative to its true size (1);
+the default of 2.5 keeps surface detail visible on a large screen. At night the renderer uses the calculated lunar phase and a location/day-seeded
+procedural star field. The remaining appearance controls can still tune clouds, haze, moon brightness, and the night sky.
+
+URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, `ui=0` hides the HUD and buttons, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
+
+Export in the settings panel downloads the current settings as `ocean-settings.json`. Import reads that file back, applies the recognized values, and leaves every other setting unchanged. `sound`, `showButtons`, and `showInfo` accept `true` or `false`. Reset to defaults restores every setting and the camera to their built-in defaults, with sound off.
 
 ## How it works
 
@@ -59,7 +98,9 @@ The surface mesh is a CDLOD quadtree with 17 levels. Vertices are 6.25 cm apart 
 
 ### Sky
 
-The atmosphere follows Hillaire's approach, with transmittance, multiple-scattering, and sky-view lookup tables plus aerosol haze. There are two cloud layers, a broken low cumulus and a fibrous altostratus deck. Each is shaded with self-shadowing toward the sun, lit rims, silver linings when backlit, and direction-dependent multiple scattering.
+The atmosphere follows Hillaire's approach, with transmittance, multiple-scattering, and sky-view lookup tables plus aerosol haze. There are two independently advected cloud layers: broken low cumulus and a fibrous high deck. Each has its own wind direction, speed, altitude, scale, coverage, and optical density. Shape evolution continuously changes the formations instead of merely sliding a fixed texture across the sky. Shared controls tune edge softness, silver linings, ambient light, and whether motion runs. Cloud behavior starts in Dynamic: coverage, altitude, wind, density, and lighting follow the time of day and a slowly changing weather pattern. Low clouds build through the afternoon and thin at night, while the high deck moves faster and changes on its own. The manual cloud controls are hidden while Dynamic is selected, and their previous values return when Static is selected again.
+
+Cloud lighting follows the configured sun throughout the day, producing warm sunrise and sunset transmission, bright backlit edges, self-shadowed interiors, and cooler ambient bases. After dark, the moon gives nearby cloud edges faint cool illumination. A procedural celestial pass adds a phased moon and stable, seeded stars after twilight.
 
 Cloud noise octaves are filtered by pixel footprint, and silhouettes are anti-aliased analytically: the screen-space derivative of each layer's edge function sets the width of its opacity edge. Cloud transmittance along the sun direction dims the sunlight that reaches the water, and aerial perspective is applied over the sea.
 
