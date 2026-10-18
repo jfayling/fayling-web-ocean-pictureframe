@@ -309,7 +309,9 @@ fn shadeLayer(dir: vec3f, h: CloudHit, hc: f32, d: f32, s1: f32, s2: f32, s3: f3
   let alpha = 1.0 - exp(-tau);
   let tauS = (d * 0.5 + s1 * 0.6 + s2 + s3 * 0.7) * sigma * 0.55;
   let Ts = exp(-tauS);
-  let sunC = sampleTrans(RG + hc, dot(h.up, F.sunDir.xyz)) * F.sunDir.w;
+  // Direct sun on the deck fades out just below the horizon. The transmittance of a
+  // sun that has already set is a dim red, and it was drawing a rim on night clouds.
+  let sunC = sampleTrans(RG + hc, dot(h.up, F.sunDir.xyz)) * F.sunDir.w * smoothstep(-0.06, 0.04, F.sunDir.y);
   let cosT = dot(dir, F.sunDir.xyz);
   let ph = mix(phaseHG(cosT, g), phaseHG(cosT, -0.2), 0.25);
   let fwd = smoothstep(-0.2, 0.7, cosT);
@@ -324,12 +326,22 @@ fn shadeLayer(dir: vec3f, h: CloudHit, hc: f32, d: f32, s1: f32, s2: f32, s3: f3
   // bases are lit by the sky from the sides/below (horizon band + sea), cooler than the tops
   let amb = (skyAtmo(normalize(vec3f(dir.x, 0.03, dir.z))) * 0.26 + skyAtmo(vec3f(0.0, 1.0, 0.0)) * 0.42)
             * alpha * (1.0 - 0.35 * d) * F.cloudLight.w;
-  // At night the moon gives cloud edges a very faint cool illumination.
-  let moonPhase = 0.5 * (1.0 + dot(normalize(F.moonLight.xyz), -normalize(F.moonDir.xyz)));
-  let moonFacing = smoothstep(-0.2, 0.8, dot(dir, F.moonDir.xyz));
-  let moonLit = vec3f(0.008, 0.011, 0.018) * F.moonDir.w * moonPhase * moonFacing *
-                alpha * exp(-tauS * 0.35) * (1.0 - smoothstep(-0.08, 0.03, F.sunDir.y));
-  return vec4f(single + ms + amb + moonLit, alpha);
+  // After dark the sun and the sky LUT go black. A cool ambient keeps the cloud body
+  // readable with no moon, and moonlight brightens the faces turned toward the moon.
+  let night = 1.0 - smoothstep(-0.05, 0.16, F.sunDir.y);
+  var nightLit = vec3f(0.0);
+  if (night > 0.001) {
+    let moon = normalize(F.moonDir.xyz);
+    let phase = 0.5 * (1.0 + dot(normalize(F.moonLight.xyz), -moon));
+    let moonUp = smoothstep(-0.04, 0.12, moon.y) * step(0.001, F.moonDir.w);
+    let moonE = F.moonDir.w * phase * moonUp;
+    let towardMoon = smoothstep(-0.4, 0.85, dot(dir, moon));
+    let cool = vec3f(0.62, 0.70, 0.88);
+    let fill = (0.045 + 0.020 * moonE) * (1.0 - 0.35 * d);
+    let edge = 0.014 * moonE * (0.35 + 0.65 * towardMoon) * (0.35 + 0.65 * rim) * Ts;
+    nightLit = cool * (fill + edge) * alpha * F.cloudLight.w * night;
+  }
+  return vec4f(single + ms + amb + nightLit, alpha);
 }
 
 // returns (premultiplied radiance, fraction of the background sky hidden)
@@ -385,10 +397,13 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
   }
   *sunT = (1.0 - lo.a) * (1.0 - hi.a);
   // low layer in front; aerial perspective fades each layer into the haze without making
-  // it transparent to the layer behind
+  // it transparent to the layer behind, or to the stars
   let col = lo.rgb * loVis + hi.rgb * hiVis * (1.0 - lo.a);
-  let hidden = lo.a * loVis + hi.a * hiVis * (1.0 - lo.a);
-  return vec4f(col, hidden);
+  let cover = lo.a + hi.a * (1.0 - lo.a);
+  // The fade used to lower coverage, which let stars shine through solid clouds.
+  // Put the missing atmosphere back into the color and keep the geometric coverage.
+  let haze = skyAtmo(dir) * (lo.a * (1.0 - loVis) + hi.a * (1.0 - lo.a) * (1.0 - hiVis));
+  return vec4f(col + haze, cover);
 }
 
 fn sunDisk(dir: vec3f) -> vec3f {
@@ -502,11 +517,15 @@ fn moonDisk(dir: vec3f, pixAng: f32) -> vec4f {
   return vec4f((col + vec3f(0.85, 0.9, 1.0) * halo) * gain * ext, cover);
 }
 
-fn nightSky(dir: vec3f, pixAng: f32) -> vec3f {
+// cover is the cloud's geometric opacity. Lighting can stay soft while a cloud that is
+// already visible hides the stars and the moon.
+fn nightSky(dir: vec3f, pixAng: f32, cover: f32) -> vec3f {
   let night = 1.0 - smoothstep(-0.12, 0.015, F.sunDir.y);
   let base = vec3f(0.002, 0.004, 0.009) * F.nightP.w * night * (0.35 + 0.65 * max(dir.y, 0.0));
   let m = moonDisk(dir, pixAng);
-  return base + starField(dir, pixAng) * (1.0 - m.a) + m.rgb;
+  let starCover = smoothstep(0.015, 0.08, cover);
+  let points = (starField(dir, pixAng) * (1.0 - m.a) + m.rgb) * (1.0 - starCover);
+  return base * (1.0 - cover) + points;
 }
 
 fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
@@ -517,7 +536,7 @@ fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var sunT = 1.0;
   let cl = cloudLayers(dir, pixAng, vec2f(-1.0), &sunT);
   L = L * (1.0 - cl.a) + cl.rgb;
-  L += nightSky(dir, pixAng) * (1.0 - cl.a);
+  L += nightSky(dir, pixAng, cl.a);
   if (withSun) { L += sunDisk(dir) * sunT; }
   return L;
 }
@@ -597,9 +616,10 @@ export const SUN_VIS = FRAME_WGSL + ATMO_CORE_WGSL + /* wgsl */ `
 @group(0) @binding(4) var<storage, read_write> sunVis: array<f32, 4>;
 @group(0) @binding(5) var starMap: texture_2d<f32>;
 ` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
-var<workgroup> part: array<f32, 8>;
-// one ray per thread (7 rays across the disc), then a tiny reduction
-@compute @workgroup_size(8)
+var<workgroup> part: array<f32, 16>;
+// 7 rays across the sun and 7 across the moon, then a tiny reduction.
+// sunVis[0] is sunlight that reaches the water; sunVis[1] is moonlight.
+@compute @workgroup_size(16)
 fn main(@builtin(local_invocation_index) k: u32) {
   let sd = F.sunDir.xyz;
   let tx = normalize(cross(sd, vec3f(0.0, 1.0, 0.0)));
@@ -611,12 +631,32 @@ fn main(@builtin(local_invocation_index) k: u32) {
     let dir = normalize(sd + (tx * o.x + ty * o.y) * SUN_ANG_R);
     let cl = cloudLayers(dir, 0.0, vec2f(-1.0), &t);
   }
+  if (k >= 8u && k < 15u) {
+    t = 0.0;
+    if (F.moonDir.w > 0.0 && F.moonDir.y > 0.0) {
+      let md = normalize(F.moonDir.xyz);
+      let idx = k - 8u;
+      let helper = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(md.y) < 0.97);
+      let mx = normalize(cross(md, helper));
+      let my = cross(mx, md);
+      let a = f32(idx) * 0.8975979;
+      let o = select(vec2f(cos(a), sin(a)) * 0.65, vec2f(0.0), idx == 0u);
+      let dir = normalize(md + (mx * o.x + my * o.y) * MOON_ANG_R * max(F.moonLight.w, 0.0));
+      t = 1.0;
+      let cl = cloudLayers(dir, 0.0, vec2f(-1.0), &t);
+    }
+  }
   part[k] = t;
   workgroupBarrier();
   if (k == 0u) {
-    var acc = 0.0;
-    for (var i = 0u; i < 7u; i++) { acc += part[i]; }
-    sunVis[0] = acc / 7.0;
+    var accS = 0.0;
+    var accM = 0.0;
+    for (var i = 0u; i < 7u; i++) {
+      accS += part[i];
+      accM += part[8u + i];
+    }
+    sunVis[0] = accS / 7.0;
+    sunVis[1] = accM / 7.0;
   }
 }
 `;

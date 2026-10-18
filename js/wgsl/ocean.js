@@ -36,7 +36,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = (skyAtmo(d2) + nightSky(d2, pixAng)) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a) + cl.rgb + sunDisk(dir) * sunT;
   return vec4f(L, 1.0);
 }
 `;
@@ -49,11 +49,12 @@ export const OCEAN = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ 
 @group(0) @binding(8) var envCube: texture_cube<f32>;
 @group(0) @binding(9) var sampR: sampler;
 @group(0) @binding(10) var foamWorld: texture_2d_array<f32>;
-@group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>;
+@group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>; // [0] sun, [1] moon cloud transmittance
 ` + SKY_RENDER_FUNCS + /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 const ENV_TEXELS_PER_RAD: f32 = ${ENV_SIZE}.0 / 1.5708;
 const TEX_N: f32 = ${N}.0;
+const MOON_DISC: f32 = 0.00452; // mean lunar angular radius, radians
 
 struct VSOut {
   @builtin(position) pos: vec4f,
@@ -114,6 +115,46 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   return a * 0.78 + b * 0.22;
 }
 
+// LEAN glitter for one disc light. angR widens the lobe by that disc's angular radius
+// (reflection of a finite source, not a point).
+fn facetGlitter(V: vec3f, L: vec3f, sl: vec2f, cov: vec3f, angR: f32) -> f32 {
+  let spread = angR * angR * 0.5;
+  let c = vec3f(cov.x + spread, cov.y + spread, cov.z);
+  let Hv = normalize(V + L);
+  let hs = -Hv.xz / max(Hv.y, 1e-3);
+  let dsl = hs - sl;
+  let det = max(c.x * c.y - c.z * c.z, 1e-10);
+  let e = (dsl.x * dsl.x * c.y + dsl.y * dsl.y * c.x - 2.0 * dsl.x * dsl.y * c.z) / det;
+  let pdf = exp(-0.5 * e) / (2.0 * PI * sqrt(det));
+  let hy2 = Hv.y * Hv.y;
+  let Dm = pdf / max(hy2 * hy2, 1e-6);
+  let G = 1.0 / (1.0 + lambdaSmith(V, c) + lambdaSmith(L, c));
+  let Fh = fresnelWater(dot(V, Hv));
+  return Fh * Dm * G / (4.0 * max(V.y, 0.02));
+}
+
+// Moonlight on the water. Allen's phase curve (full = 1, quarter ≈ 0.09), the same
+// atmospheric reddening as the disc, cloud cover, and a fade once the sun is up.
+// The brightness slider scales it, and the size slider scales it with the disc's area.
+// The constant is much stronger than the true
+// full-moon / noon-sun ratio so the path still reads under the daytime exposure.
+fn moonIlluminance() -> vec3f {
+  if (F.moonDir.w <= 0.0 || F.moonDir.y <= 0.0 || F.sunDir.y >= 0.2 || sunVis[1] <= 0.001) {
+    return vec3f(0.0);
+  }
+  let moon = normalize(F.moonDir.xyz);
+  let lite = normalize(F.moonLight.xyz);
+  let deg = acos(clamp(dot(lite, -moon), -1.0, 1.0)) * (180.0 / PI);
+  let deg2 = deg * deg;
+  let phase = exp(-0.921034037 * (0.026 * deg + 4e-9 * deg2 * deg2));
+  let night = 1.0 - smoothstep(-0.05, 0.18, F.sunDir.y);
+  // The size slider keeps the disc's surface brightness and only changes its area,
+  // so the light on the water scales with that area. 2.5 is the tuned default size.
+  let size = max(F.moonLight.w, 0.0) / 2.5;
+  let E = F.moonDir.w * phase * night * sunVis[1] * 0.028 * size * size;
+  return vec3f(1.0, 0.96, 0.9) * sampleTrans(camR(), moon.y) * E;
+}
+
 @fragment fn fs(in: VSOut) -> @location(0) vec4f {
   let xz = in.xz;
   var s = vec2f(0.0);
@@ -157,6 +198,8 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
 
   let sunE = sunIlluminance() * sunVis[0];
+  let moonL = normalize(F.moonDir.xyz);
+  let moonE = moonIlluminance();
   let skyUp = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
   // average radiance of the whole upper hemisphere (incl. the bright horizon band)
   let skyHemi = skyUp * 0.4 + 0.15 * (
@@ -166,18 +209,11 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
       textureSampleLevel(envCube, sampC, vec3f(0.0, 0.34, -0.94), ENV_MAXMIP - 1.0).rgb);
   let skyN = textureSampleLevel(envCube, sampC, nrm, ENV_MAXMIP - 1.0).rgb;
 
-  // ---- sun glitter: anisotropic Gaussian slope distribution ----
-  let Hv = normalize(V + Ld);
-  let hs = -Hv.xz / max(Hv.y, 1e-3);
-  let dsl = hs - sl;
-  let det = max(cov.x * cov.y - cov.z * cov.z, 1e-10);
-  let e = (dsl.x * dsl.x * cov.y + dsl.y * dsl.y * cov.x - 2.0 * dsl.x * dsl.y * cov.z) / det;
-  let pdf = exp(-0.5 * e) / (2.0 * PI * sqrt(det));
-  let hy2 = Hv.y * Hv.y;
-  let Dm = pdf / max(hy2 * hy2, 1e-6);
-  let G = 1.0 / (1.0 + lambdaSmith(V, cov) + lambdaSmith(Ld, cov));
-  let Fh = fresnelWater(dot(V, Hv));
-  let spec = sunE * (Fh * Dm * G / (4.0 * max(V.y, 0.02))) * step(0.0, Ld.y);
+  // ---- sun and moon glitter: anisotropic Gaussian slope distribution ----
+  var spec = sunE * facetGlitter(V, Ld, sl, cov, SUN_ANG_R) * step(0.0, Ld.y);
+  if (moonE.g > 0.0) {
+    spec += moonE * facetGlitter(V, moonL, sl, cov, MOON_DISC * max(F.moonLight.w, 0.0));
+  }
 
   // ---- sky reflection ----
   // At grazing angles the *visible* facets are biased towards the viewer (projected-area
@@ -249,7 +285,10 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let foamAmb = skyHemi * 1.0 + skyN * 0.3;
   let foamAmbN = mix(foamAmb, vec3f(dot(foamAmb, vec3f(0.2126, 0.7152, 0.0722))), 0.85);
   // grazing sun is largely self-shadowed by the foam's lumpy micro-structure
-  let foamLit = foamAlb * (sunE * max(dot(nrm, Ld), 0.0) * 0.318 * 0.5 + foamAmbN * 1.55);
+  // moonlight reaches whitecaps from the side as well as along the normal, so foam
+  // stays pale silver instead of leaving dark holes in the glitter path
+  let foamLit = foamAlb * (sunE * max(dot(nrm, Ld), 0.0) * 0.318 * 0.5
+    + moonE * (max(dot(nrm, moonL), 0.0) * 0.45 + 0.25) + foamAmbN * 1.55);
 
   if (F.post.w > 0.5) {
     // debug: r = foam cover, g = clamp(J), b = world foam level-0 weight

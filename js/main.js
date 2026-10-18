@@ -720,6 +720,35 @@ async function main() {
     return [Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e)];
   }
 
+  // Static (Night) holds the sun below the horizon. Phase is set directly, not from that sun.
+  function manualSunElev() {
+    return P.skyMode === 'night' ? Math.min(P.sunElev, -12) : P.sunElev;
+  }
+  // Lit fraction of the disc: 0 when the moon sits on the sun, 1 when it is opposite.
+  function staticMoonIllumination() {
+    if (P.skyMode === 'night') return P.moonPhase;
+    const sun = horizonDirection(manualSunElev(), P.sunAzim);
+    const moon = horizonDirection(P.moonElev, P.moonAzim);
+    return (1 - (sun[0] * moon[0] + sun[1] * moon[1] + sun[2] * moon[2])) / 2;
+  }
+  // A light direction whose angle from the moon matches the phase slider.
+  // The spare component points toward the horizon, so a crescent's horns point up.
+  function nightPhaseLight(moon) {
+    const c = 1 - 2 * P.moonPhase;
+    const s = Math.sqrt(Math.max(0, 1 - c * c));
+    let px = moon[0] * moon[1];
+    let py = moon[1] * moon[1] - 1;
+    let pz = moon[2] * moon[1];
+    const len = Math.hypot(px, py, pz);
+    if (len < 1e-4) { px = 1; py = 0; pz = 0; }
+    else { px /= len; py /= len; pz /= len; }
+    const lx = moon[0] * c + px * s;
+    const ly = moon[1] * c + py * s;
+    const lz = moon[2] * c + pz * s;
+    const n = Math.hypot(lx, ly, lz) || 1;
+    return [lx / n, ly / n, lz / n];
+  }
+
   function skyUsesPlace() {
     return P.skyMode === 'dynamic' || P.skyMode === 'dated' || P.skyMode === 'lapse';
   }
@@ -776,6 +805,7 @@ async function main() {
     skyInstant = when;
     envFull = 2;
     updateSkyReadout();
+    updateDrivenMoon();
     return true;
   }
   function refreshDynamicSky() {
@@ -805,44 +835,53 @@ async function main() {
       control.output.textContent = text;
     }
   }
-  function updateDynamicClouds(dt) {
+  function updateDynamicClouds() {
     if (P.cloudMode !== 'dynamic') return;
-    cloudTime += dt;
     const when = skyUsesPlace() && skyInstant ? skyInstant : new Date();
     const hour = when.getHours() + when.getMinutes() / 60 + when.getSeconds() / 3600;
-    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(P.sunElev * D2R);
+    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(manualSunElev() * D2R);
     const elev = Math.asin(Math.max(-1, Math.min(1, sunY))) / D2R;
     const daylight = weatherSmooth(-6, 10, elev);
-    const afternoon = Math.exp(-((hour - 15.2) ** 2) / 16);
-    const system = 0.5 + 0.5 * Math.sin(cloudTime * 0.0042);
-    const front = 0.5 + 0.5 * Math.sin(cloudTime * 0.0017 + 1.8);
-    const lowDir = (118 + 28 * Math.sin(cloudTime * 0.0011) + 360) % 360;
+    const afternoon = Math.exp(-((hour - 15.2) ** 2) / 12);
+    // A deterministic, location-dependent weather pattern. Synoptic systems evolve over
+    // several simulated days, so Date and time is repeatable and Time lapse advances the
+    // weather with its sky instead of running a 25-minute real-time weather cycle.
+    const weatherHours = when.getTime() / 3600000;
+    const placePhase = skyLocation
+      ? (skyLocation.latitude * 0.73 + skyLocation.longitude * 0.37) * D2R
+      : 1.37;
+    const wave = (period, phase = 0) => Math.sin(weatherHours * Math.PI * 2 / period + placePhase + phase);
+    const moisture = Math.max(0, Math.min(1, 0.48 + 0.30 * wave(92) + 0.16 * wave(37, 1.9)));
+    const front = 0.5 + 0.5 * wave(137, -0.8);
+    const convection = afternoon * daylight;
+    const lowDir = (225 + 65 * wave(121, 0.4) + 25 * wave(43, -1.2) + 360) % 360;
+    const lowWind = 3 + 10 * front + 4 * (0.5 + 0.5 * wave(31, 2.3));
     const lowSun = Math.exp(-((elev - 6) ** 2) / 180) * weatherSmooth(-3, 4, elev);
     showDrivenSetting('cloudMotion', true);
-    showDrivenSetting('clouds', Math.min(0.92, 0.08 + 0.58 * afternoon * daylight + 0.24 * system * (0.3 + 0.7 * daylight)));
-    showDrivenSetting('cloudAltitude', 1.35 + 1.15 * afternoon * daylight);
-    showDrivenSetting('cloudScale', 0.8 + 0.45 * afternoon);
-    showDrivenSetting('cloudDensity', 1.3 + 2.4 * afternoon * (0.45 + 0.55 * daylight));
-    showDrivenSetting('cloudWindSpeed', 3 + 8 * daylight + 7 * system);
+    showDrivenSetting('clouds', Math.min(0.92, 0.04 + 0.72 * moisture + 0.16 * convection * (1 - 0.55 * moisture)));
+    showDrivenSetting('cloudAltitude', 0.75 + 1.8 * (1 - moisture) + 0.35 * convection);
+    showDrivenSetting('cloudScale', 0.75 + 0.65 * (1 - moisture) + 0.25 * convection);
+    showDrivenSetting('cloudDensity', 0.8 + 3.4 * moisture + 0.5 * convection);
+    showDrivenSetting('cloudWindSpeed', lowWind);
     showDrivenSetting('cloudWindDir', lowDir);
-    showDrivenSetting('cloudEvolution', 0.18 + 0.85 * daylight * (0.4 + afternoon));
-    showDrivenSetting('veil', 0.06 + 0.48 * front);
-    showDrivenSetting('highCloudAltitude', 6.5 + 2.4 * front);
-    showDrivenSetting('highCloudScale', 0.85 + 0.55 * (1 - front));
-    showDrivenSetting('highCloudDensity', 0.35 + 0.85 * front);
-    showDrivenSetting('highCloudWindSpeed', 14 + 30 * (0.35 + 0.65 * front));
-    showDrivenSetting('highCloudWindDir', (lowDir + 26 + 12 * Math.sin(cloudTime * 0.0007)) % 360);
-    showDrivenSetting('cloudSoftness', 0.8 + 0.55 * (1 - daylight));
-    showDrivenSetting('cloudSilver', 0.2 + 1.45 * lowSun);
-    showDrivenSetting('cloudAmbient', 0.4 + 0.85 * daylight);
+    showDrivenSetting('cloudEvolution', 0.15 + 0.65 * Math.min(1, lowWind / 18) + 0.35 * convection);
+    showDrivenSetting('veil', Math.min(0.82, 0.03 + 0.55 * (0.55 * front + 0.45 * moisture)));
+    showDrivenSetting('highCloudAltitude', 7 + 3 * (1 - front));
+    showDrivenSetting('highCloudScale', 0.75 + 0.7 * (1 - front));
+    showDrivenSetting('highCloudDensity', 0.3 + 1.25 * (0.55 * front + 0.45 * moisture));
+    showDrivenSetting('highCloudWindSpeed', 18 + 25 * front + 8 * (0.5 + 0.5 * wave(53, 0.7)));
+    showDrivenSetting('highCloudWindDir', (lowDir + 24 + 16 * wave(83, 2.5) + 360) % 360);
+    showDrivenSetting('cloudSoftness', 0.75 + 0.55 * moisture + 0.15 * (1 - daylight));
+    showDrivenSetting('cloudSilver', 0.15 + 1.55 * lowSun);
+    showDrivenSetting('cloudAmbient', 0.85 + 0.4 * daylight);
   }
   function updateDynamicStars() {
     if (P.starMode !== 'dynamic') return;
-    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(P.sunElev * D2R);
+    const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(manualSunElev() * D2R);
     const sunElev = Math.asin(Math.max(-1, Math.min(1, sunY))) / D2R;
     const moonY = skyUsesPlace() && liveSky ? liveSky.moonDirection[1] : Math.sin(P.moonElev * D2R);
     const moonElev = Math.asin(Math.max(-1, Math.min(1, moonY))) / D2R;
-    const illumination = skyUsesPlace() && liveSky ? liveSky.moonIllumination : P.moonPhase;
+    const illumination = skyUsesPlace() && liveSky ? liveSky.moonIllumination : staticMoonIllumination();
     const moonUp = P.moon ? weatherSmooth(-1, 30, moonElev) : 0;
     const moonlight = moonUp * Math.max(0, Math.min(1, illumination));
     // A few stars remain in civil twilight; the full catalog needs astronomical darkness.
@@ -853,6 +892,12 @@ async function main() {
     showDrivenSetting('starDensity', Math.min(1, darkness * openSky * (1 - 0.82 * moonlight)));
     showDrivenSetting('starBrightness', Math.min(5, (0.45 + 1.15 * darkness) * (1 - 0.22 * moonlight)));
     showDrivenSetting('nightBrightness', Math.min(4, (0.35 + 0.25 * darkness + 1.7 * moonlight) * (0.65 + 0.35 * clarity)));
+    // In an unplaced sky there is no geographic orientation, but Dynamic should still
+    // turn the catalogue at the sidereal-day rate instead of hiding a frozen manual seed.
+    const when = skyUsesPlace() && skyInstant ? skyInstant : new Date();
+    const longitude = skyLocation?.longitude || 0;
+    const siderealTurns = when.getTime() / 86164090.5 + longitude / 360;
+    showDrivenSetting('starSeed', ((siderealTurns % 1) + 1) % 1 * 1000);
   }
 
   function writeFrame(time) {
@@ -878,7 +923,7 @@ async function main() {
     f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
     f[28] = fx; f[29] = fy; f[30] = fz; f[31] = 0;
     const dynamic = skyUsesPlace() && liveSky;
-    const sun = dynamic ? liveSky.sunDirection : horizonDirection(P.sunElev, P.sunAzim);
+    const sun = dynamic ? liveSky.sunDirection : horizonDirection(manualSunElev(), P.sunAzim);
     const moon = dynamic ? liveSky.moonDirection : horizonDirection(P.moonElev, P.moonAzim);
     f[32] = sun[0]; f[33] = sun[1]; f[34] = sun[2]; f[35] = 14.0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
@@ -897,26 +942,18 @@ async function main() {
     f[91] = 1.1e-4;
     f[92] = P.cloudAltitude; f[93] = P.clouds; f[94] = P.cloudSoftness;
     f[95] = 0;
-    f[96] = moon[0]; f[97] = moon[1]; f[98] = moon[2]; f[99] = P.moon ? P.moonBrightness : 0;
-    let moonLight = sun;
-    if (!dynamic) {
-      const phaseAngle = Math.acos(Math.max(-1, Math.min(1, P.moonPhase * 2 - 1)));
-      let tx = -moon[2], tz = moon[0];
-      const tl = Math.hypot(tx, tz) || 1;
-      tx /= tl; tz /= tl;
-      moonLight = [
-        -moon[0] * Math.cos(phaseAngle) + tx * Math.sin(phaseAngle),
-        -moon[1] * Math.cos(phaseAngle),
-        -moon[2] * Math.cos(phaseAngle) + tz * Math.sin(phaseAngle),
-      ];
-    }
-    f[100] = moonLight[0]; f[101] = moonLight[1]; f[102] = moonLight[2]; f[103] = P.moonSize;
+    const day = P.skyMode === 'day';
+    const night = P.skyMode === 'night';
+    f[96] = moon[0]; f[97] = moon[1]; f[98] = moon[2]; f[99] = !day && P.moon ? P.moonBrightness : 0;
+    // Static and placed skies light the moon from the sun. Static (Night) uses the phase slider.
+    const light = night && !dynamic ? nightPhaseLight(moon) : sun;
+    f[100] = light[0]; f[101] = light[1]; f[102] = light[2]; f[103] = P.moonSize;
     const starDay = Math.trunc((skyInstant || new Date()).getTime() / 86400000);
     const dynamicSeed = skyLocation
       ? Math.abs(Math.trunc(skyLocation.latitude * 1000) * 31 + Math.trunc(skyLocation.longitude * 1000) * 17 + starDay)
       : P.starSeed;
-    f[104] = P.stars ? P.starDensity : 0; f[105] = P.starBrightness;
-    f[106] = dynamic ? dynamicSeed : P.starSeed; f[107] = P.nightBrightness;
+    f[104] = !day && P.stars ? P.starDensity : 0; f[105] = P.starBrightness;
+    f[106] = dynamic ? dynamicSeed : P.starSeed; f[107] = day ? 0 : P.nightBrightness;
     const pole = dynamic ? liveSky.poleDirection : [0, 1, 0];
     f[108] = pole[0]; f[109] = pole[1]; f[110] = pole[2]; f[111] = 0;
     f[112] = cloudScroll.lowX; f[113] = cloudScroll.lowZ; f[114] = 0; f[115] = cloudScroll.evolve;
@@ -963,10 +1000,11 @@ async function main() {
     'highCloudWindSpeed', 'highCloudWindDir', 'highCloudScale', 'highCloudAltitude',
     'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
   ];
-  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'nightBrightness'];
+  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starSeed', 'nightBrightness'];
+  const MOON_DRIVEN = ['moon', 'moonElev', 'moonAzim', 'moonPhase', 'moonSize', 'moonBrightness'];
   let cloudManual = null;
   let starManual = null;
-  let cloudTime = 0;
+  let moonManual = null;
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
   const cloudScroll = { lowX: 0, lowZ: 0, highX: 0, highZ: 0, evolve: 0 };
@@ -1079,6 +1117,8 @@ async function main() {
       { title: 'Mode', settings: [
         ['skyMode', 'Sky behavior', 'select', [
           ['static', 'Static'],
+          ['day', 'Static (Day)'],
+          ['night', 'Static (Night)'],
           ['dynamic', 'Dynamic / real-time'],
           ['dated', 'Date and time'],
           ['lapse', 'Time lapse'],
@@ -1200,6 +1240,7 @@ async function main() {
     for (const key of Object.keys(P)) {
       const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key]
         : starManual && STAR_DRIVEN.includes(key) ? starManual[key]
+        : moonManual && MOON_DRIVEN.includes(key) ? moonManual[key]
         : P[key];
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
@@ -1580,9 +1621,17 @@ async function main() {
     if (dynamic) updateDynamicClouds(0);
   }
   function refreshStarControls() {
+    const day = P.skyMode === 'day';
     const manual = P.starMode !== 'dynamic';
-    for (const key of STAR_DRIVEN) setSettingVisible(key, manual);
-    setSettingVisible('starSeed', manual && !skyUsesPlace());
+    const keys = ['starMode', 'stars', 'starSeed', ...STAR_DRIVEN];
+    if (day) {
+      for (const key of keys) setSettingVisible(key, false);
+    } else {
+      setSettingVisible('starMode', true);
+      setSettingVisible('stars', true);
+      for (const key of STAR_DRIVEN) setSettingVisible(key, manual);
+      setSettingVisible('starSeed', manual && !skyUsesPlace());
+    }
     refreshModeGroups();
   }
   function applyStarMode() {
@@ -1614,13 +1663,55 @@ async function main() {
       item.hidden = ![...body.children].some((child) => !child.hidden);
     }
   }
+  function wrapSigned(deg) {
+    return ((deg + 180) % 360 + 360) % 360 - 180;
+  }
+  // Placed sky modes own the moon. Position and phase follow the place and time,
+  // and the disc stays at the picture-frame size and brightness.
+  function updateDrivenMoon() {
+    if (!skyUsesPlace() || !liveSky) return;
+    const latitude = skyLocation ? skyLocation.latitude : 0;
+    showDrivenSetting('moon', true);
+    showDrivenSetting('moonElev', liveSky.moonAltitude);
+    showDrivenSetting('moonAzim', wrapSigned(liveSky.moonAzimuth + (latitude >= 0 ? 180 : 0)));
+    showDrivenSetting('moonPhase', liveSky.moonIllumination);
+    showDrivenSetting('moonSize', DEFAULTS.moonSize);
+    showDrivenSetting('moonBrightness', DEFAULTS.moonBrightness);
+  }
+  function setSettingLocked(key, locked) {
+    const control = controls.get(key);
+    if (!control?.row) return;
+    control.row.hidden = false;
+    control.input.disabled = locked;
+    control.row.classList.toggle('disabled', locked);
+  }
+  function applyMoonControls() {
+    const placed = skyUsesPlace();
+    if (placed && !moonManual) {
+      moonManual = {};
+      for (const key of MOON_DRIVEN) moonManual[key] = P[key];
+    }
+    if (!placed && moonManual) {
+      for (const key of MOON_DRIVEN) showDrivenSetting(key, moonManual[key]);
+      moonManual = null;
+    }
+    const day = P.skyMode === 'day';
+    if (day) {
+      for (const key of MOON_DRIVEN) setSettingVisible(key, false);
+    } else {
+      for (const key of MOON_DRIVEN) setSettingLocked(key, placed);
+      // Static derives phase from the sun. Night hides the sun, so the phase slider is the control.
+      if (!placed) setSettingVisible('moonPhase', P.skyMode === 'night');
+      if (placed) updateDrivenMoon();
+    }
+    refreshModeGroups();
+  }
   function applySkyMode(resolveLocation = false) {
     const placed = skyUsesPlace();
     const dated = P.skyMode === 'dated';
     const lapse = P.skyMode === 'lapse';
-    for (const key of ['sunElev', 'sunAzim', 'moonElev', 'moonAzim', 'moonPhase']) {
-      setSettingVisible(key, !placed);
-    }
+    for (const key of ['sunElev', 'sunAzim']) setSettingVisible(key, !placed && P.skyMode !== 'night');
+    applyMoonControls();
     setSettingVisible('zipCode', placed);
     setSettingVisible('skyWhen', dated);
     setSettingVisible('skyLapseStart', lapse);
@@ -1939,6 +2030,8 @@ async function main() {
   function keepManualSetting(key) {
     if (cloudManual && CLOUD_DRIVEN.includes(key)) cloudManual[key] = P[key];
     if (starManual && STAR_DRIVEN.includes(key)) starManual[key] = P[key];
+    if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
+    if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
   }
   function booleanSetting(raw) {
     if (typeof raw === 'boolean') return raw;
@@ -1978,6 +2071,7 @@ async function main() {
   function resetAll() {
     cloudManual = null;
     starManual = null;
+    moonManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
     note('Reset to defaults');
