@@ -11,6 +11,7 @@ import { createOceanAudio } from './audio.js';
 import { celestialState } from './astronomy.js';
 import { createStarMapData, STAR_MAP_WIDTH, STAR_MAP_HEIGHT } from './star-catalog.js';
 import { createWeatherWidget } from './weather.js';
+import { acceptedPlace, rememberChoice, resolvePlace, suggestPlaces } from './place.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
@@ -566,10 +567,12 @@ async function main() {
     cam.x = v[0]; cam.y = v[1]; cam.z = v[2]; cam.yaw = (v[3] || 0) * D2R; cam.pitch = (v[4] || 0) * D2R;
   }
   if (qs.get('fov')) cam.fovY = Number(qs.get('fov')) * D2R;
+  let placeDialog = null;
   const keys = Object.create(null);
   addEventListener('keydown', (e) => {
     keys[e.code] = true;
     if (e.repeat) return;
+    if (e.code === 'Escape' && closePlaceDialog()) return;
     if (e.code === 'Escape') setPanelOpen(false);
     if (e.code === 'F1') { e.preventDefault(); showPanel(); }
     if (e.code === 'KeyH') togglePanel();
@@ -610,7 +613,7 @@ async function main() {
     cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - e.movementY * 0.0022));
   });
   addEventListener('wheel', (e) => {
-    if (e.target instanceof Element && e.target.closest('#panel')) return;
+    if (e.target instanceof Element && e.target.closest('#panel, .place-dialog')) return;
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? 1 : 100;
     const steps = e.deltaY / unit;
@@ -1017,7 +1020,7 @@ async function main() {
     { title: 'Weather', groups: [
       { title: 'Location and updates', settings: [
         ['weather', 'Weather widget', 'toggle', 'Show', 'Hide'],
-        ['weatherZip', 'US ZIP code', 'text', '30265'],
+        ['weatherZip', 'Location', 'text', 'Lisbon, Portugal'],
         ['weatherRefresh', 'Refresh (minutes)', 5, 60, 5, 'weather'],
         ['weatherUnit', 'Units', 'select', [
           ['fahrenheit', 'Fahrenheit / mph'],
@@ -1037,7 +1040,7 @@ async function main() {
         ['weatherHumidity', 'Humidity', 'toggle', 'Show', 'Hide'],
         ['weatherWind', 'Wind', 'toggle', 'Show', 'Hide'],
         ['weatherForecast', 'Next 3 hours', 'toggle', 'Show', 'Hide'],
-        ['weatherAlerts', 'Severe alerts', 'toggle', 'Show', 'Hide'],
+        ['weatherAlerts', 'U.S. weather alerts', 'toggle', 'Show', 'Hide'],
       ] },
     ] },
     { title: 'Ocean', groups: [
@@ -1080,7 +1083,7 @@ async function main() {
           ['dated', 'Date and time'],
           ['lapse', 'Time lapse'],
         ]],
-        ['zipCode', 'US ZIP code', 'text', '30265'],
+        ['zipCode', 'Location', 'text', 'Lisbon, Portugal'],
         ['skyWhen', 'View at', 'datetime'],
         ['skyLapseStart', 'Start at', 'datetime'],
         ['lapsePace', 'Sky minutes per second', 1, 100, 1, 'lapse'],
@@ -1166,7 +1169,8 @@ async function main() {
     if (BOOL_KEYS.has(key)) return booleanSetting(raw);
     if (CHOICES.has(key)) return CHOICES.get(key).has(raw) ? raw : undefined;
     if (key === 'zipCode' || key === 'weatherZip') {
-      return typeof raw === 'string' && (/^\d{5}$/.test(raw.trim()) || raw.trim() === '') ? raw.trim() : undefined;
+      const place = acceptedPlace(raw);
+      return place || undefined;
     }
     if (key === 'skyWhen' || key === 'skyLapseStart') {
       if (typeof raw !== 'string' || raw.trim() === '') return '';
@@ -1267,7 +1271,7 @@ async function main() {
       weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
       hour: 'numeric', minute: '2-digit', hour12: !P.clock24h,
     });
-    const place = skyLocation?.name || (P.zipCode ? `ZIP ${P.zipCode}` : '');
+    const place = skyLocation?.name || P.zipCode || '';
     const text = place ? `${when} · ${place}` : when;
     if (skyReadout.textContent !== text) skyReadout.textContent = text;
   }
@@ -1381,22 +1385,35 @@ async function main() {
     parent.appendChild(row);
     controls.set(key, { input: inp, row, kind: 'color' });
   }
-  function addText(parent, key, label, placeholder) {
-    const row = document.createElement('label');
-    row.className = 'text';
-    const name = document.createElement('span'); name.textContent = label;
-    const inp = document.createElement('input');
-    Object.assign(inp, { type: 'text', value: P[key], placeholder, inputMode: 'numeric', maxLength: 5 });
-    inp.autocomplete = 'postal-code';
-    inp.addEventListener('change', () => {
-      if (!commitSetting(key, inp.value)) {
-        inp.value = P[key];
-        note('Enter a valid 5-digit US ZIP code');
-      }
+  function addPlace(parent, key, label) {
+    const row = document.createElement('div');
+    row.className = 'place';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const display = document.createElement('span');
+    display.className = 'place-value';
+    display.textContent = P[key];
+    display.title = P[key];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'place-pick';
+    button.textContent = '...';
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.setAttribute('aria-label', `Choose ${label.toLowerCase()}`);
+    button.addEventListener('click', () => openPlaceDialog(key));
+    let stored = P[key];
+    Object.defineProperty(button, 'value', {
+      configurable: true,
+      get() { return stored; },
+      set(next) {
+        stored = String(next ?? '');
+        display.textContent = stored;
+        display.title = stored;
+      },
     });
-    row.append(name, inp);
+    row.append(name, display, button);
     parent.appendChild(row);
-    controls.set(key, { input: inp, row, kind: 'text' });
+    controls.set(key, { input: button, display, row, kind: 'text' });
   }
   function addDateTime(parent, key, label) {
     const row = document.createElement('label');
@@ -1437,7 +1454,7 @@ async function main() {
     if (setting[2] === 'toggle') addToggle(host, setting[0], setting[1], setting[3], setting[4]);
     else if (setting[2] === 'select') addSelect(host, setting[0], setting[1], setting[3]);
     else if (setting[2] === 'color') addColor(host, setting[0], setting[1]);
-    else if (setting[2] === 'text') addText(host, setting[0], setting[1], setting[3]);
+    else if (setting[2] === 'text') addPlace(host, setting[0], setting[1]);
     else if (setting[2] === 'datetime') addDateTime(host, setting[0], setting[1]);
     else addSlider(host, ...setting);
   }
@@ -1540,11 +1557,13 @@ async function main() {
     setTimeout(() => { if (token === statusToken) status.textContent = ''; }, 4000);
   }
   const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note);
+  document.getElementById('weather-widget').addEventListener('click', (event) => {
+    if (event.target.closest('.weather-place')) openPlaceDialog('weatherZip');
+  });
   function applyWeather(fetchNow = false) {
     weatherWidget.update(P, fetchNow);
   }
   applyWeather(true);
-  const GEO_KEY = 'web-ocean-zip-location';
   let geoRequest = 0;
   function applyCloudMode() {
     const dynamic = P.cloudMode === 'dynamic';
@@ -1624,53 +1643,244 @@ async function main() {
     }
   }
   async function resolveZipCode() {
-    const zip = P.zipCode;
+    const query = P.zipCode;
     if (!skyUsesPlace()) return;
     if (P.skyMode === 'dated' && !skyMoment()) {
       skyLocation = liveSky = skyInstant = null;
       note('Choose the date and time to view');
       return;
     }
-    if (!/^\d{5}$/.test(zip)) {
-      skyLocation = liveSky = skyInstant = null;
-      note('This sky mode requires a 5-digit US ZIP code');
-      return;
-    }
     const request = ++geoRequest;
     try {
-      let location = null;
-      try {
-        const cached = JSON.parse(localStorage.getItem(GEO_KEY) || 'null');
-        if (cached?.zip === zip && Number.isFinite(cached.latitude) && Number.isFinite(cached.longitude)) location = cached;
-      } catch { /* unavailable */ }
-      if (!location) {
-        note('Finding ZIP code…');
-        const response = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
-        if (!response.ok) throw new Error('ZIP code not found');
-        const data = await response.json();
-        const place = data.places?.[0];
-        location = {
-          zip,
-          latitude: Number(place?.latitude),
-          longitude: Number(place?.longitude),
-          name: [place?.['place name'], place?.['state abbreviation']].filter(Boolean).join(', '),
-        };
-        if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) throw new Error('Invalid location');
-        try { localStorage.setItem(GEO_KEY, JSON.stringify(location)); } catch { /* unavailable */ }
-      }
-      if (request !== geoRequest || !skyUsesPlace() || P.zipCode !== zip) return;
+      const location = await resolvePlace(query);
+      if (request !== geoRequest || !skyUsesPlace() || P.zipCode !== query) return;
       skyLocation = location;
       if (!refreshPlacedSky()) return;
       const when = P.skyMode === 'dated' ? ` at ${P.skyWhen.replace('T', ' ')}`
         : P.skyMode === 'lapse' ? ` from ${P.skyLapseStart.replace('T', ' ')}` : '';
-      note(`${location.name || zip}${when}`);
-    } catch {
+      note(`${location.name || query}${when}`);
+    } catch (error) {
       if (request !== geoRequest) return;
       skyLocation = liveSky = skyInstant = null;
-      note('Could not locate that ZIP code');
+      note(error.message || 'Could not find that place');
     }
   }
   if (skyUsesPlace()) resolveZipCode();
+  async function refreshPlaceLabel(key) {
+    const control = controls.get(key);
+    if (!control?.display) return;
+    const query = P[key];
+    try {
+      const place = await resolvePlace(query);
+      if (P[key] !== query) return;
+      control.display.textContent = place.name || query;
+      control.display.title = place.name || query;
+    } catch {
+      if (P[key] !== query) return;
+      control.display.textContent = query;
+      control.display.title = query;
+    }
+  }
+  refreshPlaceLabel('zipCode');
+  refreshPlaceLabel('weatherZip');
+  placeDialog = document.createElement('div');
+  placeDialog.className = 'place-dialog';
+  placeDialog.hidden = true;
+  const placeSheet = document.createElement('div');
+  placeSheet.className = 'sheet';
+  placeSheet.setAttribute('role', 'dialog');
+  placeSheet.setAttribute('aria-modal', 'true');
+  const placeTitle = document.createElement('h2');
+  placeTitle.id = 'place-dialog-title';
+  placeSheet.setAttribute('aria-labelledby', placeTitle.id);
+  const placeInput = document.createElement('input');
+  placeInput.type = 'text';
+  placeInput.maxLength = 80;
+  placeInput.spellcheck = false;
+  placeInput.autocomplete = 'off';
+  placeInput.placeholder = 'Toledo';
+  placeInput.setAttribute('aria-label', 'Location search');
+  const placeChoices = document.createElement('div');
+  placeChoices.className = 'choices';
+  placeChoices.setAttribute('role', 'listbox');
+  const placeHintLine = document.createElement('p');
+  placeHintLine.className = 'hint';
+  const placeActions = document.createElement('div');
+  placeActions.className = 'actions';
+  const placeCancel = document.createElement('button');
+  placeCancel.type = 'button';
+  placeCancel.textContent = 'Cancel';
+  placeActions.append(placeCancel);
+  const placeSearch = document.createElement('div');
+  placeSearch.className = 'search';
+  placeSearch.append(placeInput, placeChoices, placeHintLine, placeActions);
+  const placeConfirm = document.createElement('div');
+  placeConfirm.className = 'confirm';
+  placeConfirm.hidden = true;
+  const placeAsk = document.createElement('p');
+  const placeConfirmActions = document.createElement('div');
+  placeConfirmActions.className = 'actions';
+  const placeNo = document.createElement('button');
+  placeNo.type = 'button';
+  placeNo.textContent = 'No';
+  const placeYes = document.createElement('button');
+  placeYes.type = 'button';
+  placeYes.className = 'yes';
+  placeYes.textContent = 'Yes';
+  placeConfirmActions.append(placeNo, placeYes);
+  placeConfirm.append(placeAsk, placeConfirmActions);
+  placeSheet.append(placeTitle, placeSearch, placeConfirm);
+  placeDialog.append(placeSheet);
+  document.body.append(placeDialog);
+  const placeKeys = ['weatherZip', 'zipCode'];
+  let placeDialogKey = '';
+  let suggestToken = 0;
+  let suggestTimer = 0;
+  let pendingChoice = null;
+  let pendingOthers = [];
+  function placeSettingName(key) {
+    return key === 'weatherZip' ? 'the weather location' : 'the sky location';
+  }
+  function placeMatchesChoice(key, choice) {
+    const shown = (controls.get(key)?.display?.textContent || '').trim();
+    const stored = String(P[key] || '').trim();
+    const names = [choice.value, choice.name, choice.label].map((item) => String(item || '').trim()).filter(Boolean);
+    return names.includes(stored) || names.includes(shown);
+  }
+  function showPlaceSearch() {
+    pendingChoice = null;
+    pendingOthers = [];
+    placeConfirm.hidden = true;
+    placeSearch.hidden = false;
+  }
+  function showPlaceConfirm(choice, others) {
+    pendingChoice = choice;
+    pendingOthers = others;
+    const placeName = choice.name || choice.value;
+    const names = others.map(placeSettingName);
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+    placeTitle.textContent = 'Other locations';
+    placeAsk.textContent = `Also use ${placeName} for ${list}?`;
+    placeSearch.hidden = true;
+    placeConfirm.hidden = false;
+    suggestToken += 1;
+    placeYes.focus();
+  }
+  function applyPlaceToOthers() {
+    const choice = pendingChoice;
+    const others = pendingOthers;
+    for (const key of others) {
+      if (choice && !commitSetting(key, choice.value)) note('That place could not be saved');
+    }
+    closePlaceDialog();
+  }
+  function closePlaceDialog() {
+    if (!placeDialog || placeDialog.hidden) return false;
+    placeDialog.hidden = true;
+    suggestToken += 1;
+    showPlaceSearch();
+    const opener = controls.get(placeDialogKey)?.input;
+    if (opener) opener.focus();
+    return true;
+  }
+  function selectedChoice() {
+    return placeChoices.querySelector('.place-choice[aria-selected="true"]');
+  }
+  function selectChoice(button) {
+    for (const choice of placeChoices.querySelectorAll('.place-choice')) {
+      choice.setAttribute('aria-selected', choice === button ? 'true' : 'false');
+    }
+    button?.scrollIntoView({ block: 'nearest' });
+  }
+  function chooseListedPlace(button) {
+    const choice = button?.placeChoice;
+    if (!choice || !placeDialogKey) return;
+    rememberChoice(choice);
+    if (!commitSetting(placeDialogKey, choice.value)) {
+      note('That place could not be saved');
+      return;
+    }
+    const others = placeKeys.filter((key) => key !== placeDialogKey && !placeMatchesChoice(key, choice));
+    if (others.length) showPlaceConfirm(choice, others);
+    else closePlaceDialog();
+  }
+  function renderPlaceChoices(choices) {
+    placeChoices.replaceChildren();
+    for (const choice of choices) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'place-choice';
+      button.setAttribute('role', 'option');
+      button.textContent = choice.label;
+      button.placeChoice = choice;
+      button.addEventListener('click', () => chooseListedPlace(button));
+      placeChoices.append(button);
+    }
+    selectChoice(placeChoices.querySelector('.place-choice'));
+  }
+  async function searchPlaceDialog() {
+    const query = placeInput.value.trim();
+    const token = ++suggestToken;
+    if (query.length < 2) {
+      placeChoices.replaceChildren();
+      placeHintLine.textContent = 'Type a city, such as Toledo';
+      return;
+    }
+    placeHintLine.textContent = 'Searching…';
+    placeChoices.replaceChildren();
+    try {
+      const choices = await suggestPlaces(query);
+      if (token !== suggestToken || placeDialog.hidden) return;
+      renderPlaceChoices(choices);
+      placeHintLine.textContent = choices.length ? 'Choose a place' : 'No matching places';
+    } catch (error) {
+      if (token !== suggestToken || placeDialog.hidden) return;
+      placeChoices.replaceChildren();
+      placeHintLine.textContent = error.message || 'Could not search for that place';
+    }
+  }
+  function openPlaceDialog(key) {
+    placeDialogKey = key;
+    placeTitle.textContent = key === 'weatherZip' ? 'Weather location' : 'Sky location';
+    const shown = controls.get(key)?.display?.textContent || P[key];
+    placeInput.value = shown;
+    placeChoices.replaceChildren();
+    placeHintLine.textContent = shown.trim().length < 2 ? 'Type a city, such as Toledo' : 'Searching…';
+    showPlaceSearch();
+    placeDialog.hidden = false;
+    placeInput.focus();
+    placeInput.select();
+    searchPlaceDialog();
+  }
+  placeInput.addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(searchPlaceDialog, 250);
+  });
+  placeInput.addEventListener('keydown', (event) => {
+    const buttons = [...placeChoices.querySelectorAll('.place-choice')];
+    const current = buttons.indexOf(selectedChoice());
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!buttons.length) return;
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      selectChoice(buttons[(current + step + buttons.length) % buttons.length]);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      chooseListedPlace(selectedChoice() || buttons[0]);
+    }
+  });
+  placeCancel.addEventListener('click', closePlaceDialog);
+  placeNo.addEventListener('click', closePlaceDialog);
+  placeYes.addEventListener('click', applyPlaceToOthers);
+  placeDialog.addEventListener('click', (event) => {
+    if (event.target === placeDialog) closePlaceDialog();
+  });
+  placeDialog.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePlaceDialog();
+  });
   function commitSetting(key, value) {
     if (!Object.hasOwn(P, key)) return false;
     const control = controls.get(key);
@@ -1697,6 +1907,7 @@ async function main() {
       if (control) control.input.value = value;
       if (key.startsWith('clock')) applyClock();
       if (key.startsWith('weather')) applyWeather(key === 'weatherZip' || key === 'weatherUnit');
+      if (key === 'zipCode' || key === 'weatherZip') refreshPlaceLabel(key);
       if (key === 'skyMode') applySkyMode(true);
       if (key === 'cloudMode') applyCloudMode();
       if (key === 'starMode') applyStarMode();

@@ -97,24 +97,24 @@ The clock shows the actual current time. In Date and time and Time lapse modes i
 
 ![Weather location, units, and information settings](docs/settings-weather.png)
 
-The weather card is enabled by default and uses ZIP code 30265. It shows a graphical current condition, temperature, feels-like temperature, precipitation amount and probability, humidity, wind, and the next three hourly precipitation chances. Each item can be shown or hidden. Units are Fahrenheit and mph, or Celsius and km/h. The card can sit in any corner and starts at the bottom left. Refresh defaults to 15 minutes and can be set from 5 to 60.
+The weather card is enabled by default for Newnan, Georgia (ZIP code 30265). Choose **…** beside Location, or click the place name on the weather card, type a city such as Toledo, and pick the matching place. Matching places are listed alphabetically, including the same name in more than one country, and the list scrolls when there are more than fit. After a pick, the dialog asks whether the other location should use that place too. A postal code with its country, a five-digit US ZIP code, or coordinates work in that same box. It shows a graphical current condition, temperature, feels-like temperature, precipitation amount and probability, humidity, wind, and the next three hourly precipitation chances. Each item can be shown or hidden. Units are Fahrenheit and mph, or Celsius and km/h. The card can sit in any corner and starts at the bottom left. Refresh defaults to 15 minutes and can be set from 5 to 60.
 
 A small timestamp at the bottom of the card shows when those conditions were last received. It follows the clock's 12-hour or 24-hour setting.
 
-Active U.S. National Weather Service alerts appear above the card. Severe and extreme alerts use a high-contrast red treatment. The settings panel stays above the weather card in every corner.
+Active U.S. National Weather Service alerts appear above the card. The title stays put, and the statement scrolls through a few lines at a time so the full notice can be read. Severe and extreme alerts use a high-contrast red treatment. The settings panel stays above the weather card in every corner.
 
-Current conditions come from [Open-Meteo](https://open-meteo.com/). ZIP locations are resolved through [`api.zippopotam.us`](https://api.zippopotam.us/). Alerts come from [`api.weather.gov`](https://api.weather.gov/). The weather ZIP is separate from the sky ZIP, and both default to 30265.
+Current conditions come from [Open-Meteo](https://open-meteo.com/). US ZIP codes, and postal codes written with a country, are resolved through [`api.zippopotam.us`](https://api.zippopotam.us/). Other places are resolved through the [Open-Meteo geocoding API](https://open-meteo.com/en/docs/geocoding-api). Alerts come from [`api.weather.gov`](https://api.weather.gov/) and appear for United States locations only. The weather location is separate from the sky location, and both default to 30265.
 
 ### Sky
 
 ![Static sky controls for the sun, moon, and stars](docs/settings-sky.png)
 
-Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior start in **Dynamic / real-world**. Each can be switched to Static. The sky ZIP code defaults to 30265.
+Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior start in **Dynamic / real-world**. Each can be switched to Static. The sky location defaults to ZIP code 30265.
 
 | Mode | What it does |
 |---|---|
 | Static | Manual sun, moon, stars, atmosphere, clouds, exposure, and bloom. The original camera view stays put. |
-| Dynamic / real-time | A five-digit US ZIP code. Latitude and longitude are resolved and cached. Sun and moon update from the current time every 30 seconds. |
+| Dynamic / real-time | The place chosen beside Location. Typing a name lists the matching cities, and the picked one is resolved to latitude and longitude and cached. The same prompt offers that place for the weather location. Sun and moon update from the current time every 30 seconds. |
 | Date and time | The same place calculation, held at a date and local time you choose. |
 | Time lapse | The same calculation, advancing on its own. It starts at January 1, 2026, 12:00 AM unless you pick another start. |
 
@@ -158,7 +158,7 @@ The surface mesh is a CDLOD quadtree with 17 levels. Vertices are 6.25 cm apart 
 
 The atmosphere follows Hillaire's approach, with transmittance, multiple-scattering, and sky-view lookup tables plus aerosol haze. Cloud noise octaves are filtered by pixel footprint, and silhouettes are anti-aliased analytically: the screen-space derivative of each layer's edge function sets the width of its opacity edge. Cloud transmittance along the sun direction dims the sunlight that reaches the water, and aerial perspective is applied over the sea.
 
-A celestial pass draws the phased moon and samples a color star map generated in-browser from the bundled Yale Bright Star Catalogue. Placed sky modes compute the sun, moon, celestial pole, and equatorial orientation from the ZIP code and chosen instant.
+A celestial pass draws the phased moon and samples a color star map generated in-browser from the bundled Yale Bright Star Catalogue. Placed sky modes compute the sun, moon, celestial pole, and equatorial orientation from the location and chosen instant. South of the equator the view faces north, so the daily arc still crosses the picture.
 
 ### Post-processing
 
@@ -176,8 +176,9 @@ The per-frame code reuses preallocated typed arrays and descriptors, so the garb
 - The water is tuned toward turbid coastal water. The "Water turbidity" slider gives darker, bluer deep water when turned down.
 - The scene is open ocean only. There is no shoreline, surf, or objects in the water.
 - Clouds are two flat layers, not volumetric.
-- Dynamic sky, time lapse, and weather need a network the first time a ZIP code is resolved. Coordinates are cached after that. Weather and alerts need a network on each refresh.
-- ZIP lookup is limited to US ZIP codes.
+- Dynamic sky, time lapse, and weather need a network the first time a place is resolved. Coordinates are cached after that. Weather and alerts need a network on each refresh.
+- A five-digit number is read as a US ZIP code. Postal codes elsewhere need a country (`2000, Australia`), or use the city name. Very small places can be entered as latitude and longitude. City search uses English names.
+- U.S. National Weather Service alerts are shown only for locations in the United States.
 
 ## How the original renderer was made
 

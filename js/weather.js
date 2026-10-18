@@ -1,4 +1,4 @@
-const LOCATION_KEY = 'web-ocean-weather-location';
+import { resolvePlace } from './place.js';
 
 const ICONS = {
   drop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2.5S5.8 10 5.8 15a6.2 6.2 0 0 0 12.4 0C18.2 10 12 2.5 12 2.5Z"/><path d="M9 16.2a3.2 3.2 0 0 0 3 2.1"/></svg>',
@@ -57,6 +57,26 @@ function highestAlert(features) {
   return [...features].sort((a, b) => (rank[b.properties?.severity] || 0) - (rank[a.properties?.severity] || 0))[0];
 }
 
+function alertStatement(props) {
+  const clean = (value) => String(value || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const body = [clean(props.description), clean(props.instruction)].filter(Boolean).join('\n\n');
+  return body || props.headline || props.areaDesc || 'See local authorities for details';
+}
+
+function playAlertScroll(root) {
+  const viewport = root.querySelector('.weather-alert-scroll');
+  const track = viewport?.querySelector('.weather-alert-track');
+  const text = track?.querySelector('p');
+  if (!text?.isConnected || track.querySelector('[aria-hidden]')) return;
+  if (text.scrollHeight - viewport.clientHeight < 8) return;
+  const clone = text.cloneNode(true);
+  clone.setAttribute('aria-hidden', 'true');
+  text.after(clone);
+  // One line per second. The second copy makes the restart line up with the first.
+  track.style.animationDuration = `${Math.min(180, Math.max(12, text.offsetHeight / 14))}s`;
+  viewport.classList.add('scrolling');
+}
+
 export function createWeatherWidget(root, status) {
   let timer = 0;
   let request = 0;
@@ -64,26 +84,6 @@ export function createWeatherWidget(root, status) {
   let lastConfig = null;
   let fetchDelay = 0;
   let data = null;
-
-  async function locate(zip) {
-    try {
-      const cached = JSON.parse(localStorage.getItem(LOCATION_KEY) || 'null');
-      if (cached?.zip === zip && Number.isFinite(cached.latitude) && Number.isFinite(cached.longitude)) return cached;
-    } catch { /* storage unavailable */ }
-    const response = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
-    if (!response.ok) throw new Error('ZIP code not found');
-    const json = await response.json();
-    const place = json.places?.[0];
-    const location = {
-      zip,
-      latitude: Number(place?.latitude),
-      longitude: Number(place?.longitude),
-      name: [place?.['place name'], place?.['state abbreviation']].filter(Boolean).join(', '),
-    };
-    if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) throw new Error('Invalid location');
-    try { localStorage.setItem(LOCATION_KEY, JSON.stringify(location)); } catch { /* storage unavailable */ }
-    return location;
-  }
 
   function render(config) {
     root.hidden = !config.weather;
@@ -114,7 +114,7 @@ export function createWeatherWidget(root, status) {
       const severity = ['Extreme', 'Severe', 'Moderate', 'Minor'].includes(props.severity) ? props.severity : 'Unknown';
       alertHTML = `<div class="weather-alert" data-severity="${severity}">
         <span class="weather-alert-icon">${ICONS.alert}</span><div><strong>${escapeHTML(props.event || 'Weather alert')}${extra}</strong>
-        <span>${escapeHTML(props.headline || props.areaDesc || 'See local authorities for details')}</span></div></div>`;
+        <div class="weather-alert-scroll"><div class="weather-alert-track"><p>${escapeHTML(alertStatement(props))}</p></div></div></div></div>`;
     }
     let forecastHTML = '';
     if (config.weatherForecast && hourly.times.length) {
@@ -132,10 +132,11 @@ export function createWeatherWidget(root, status) {
     }).format(updated);
     root.innerHTML = `${alertHTML}<div class="weather-card"><div class="weather-main">
       <div class="weather-icon">${weatherIcon(icon, current.is_day)}</div>
-      <div><div class="weather-place">${escapeHTML(location.name || location.zip)}</div><div class="weather-condition">${label}</div></div>
+      <div><button type="button" class="weather-place" title="${escapeHTML(location.name || location.query)}" aria-label="Change weather location, ${escapeHTML(location.name || location.query)}">${escapeHTML(location.name || location.query)}</button><div class="weather-condition">${label}</div></div>
       ${config.weatherTemp ? `<div class="weather-temp">${Math.round(current.temperature_2m)}${unit}</div>` : ''}
       </div>${details.length ? `<div class="weather-details">${details.join('')}</div>` : ''}${forecastHTML}
       <time class="weather-updated" datetime="${updated.toISOString()}">Updated ${updatedText}</time></div>`;
+    if (root.querySelector('.weather-alert-scroll')) requestAnimationFrame(() => playAlertScroll(root));
   }
 
   async function refresh(config) {
@@ -144,9 +145,8 @@ export function createWeatherWidget(root, status) {
     controller?.abort();
     controller = new AbortController();
     try {
-      if (!/^\d{5}$/.test(config.weatherZip)) throw new Error('Enter a 5-digit weather ZIP code');
       status('Updating weather…');
-      const location = await locate(config.weatherZip);
+      const location = await resolvePlace(config.weatherZip);
       const metric = config.weatherUnit === 'celsius';
       const params = new URLSearchParams({
         latitude: location.latitude,
@@ -161,12 +161,15 @@ export function createWeatherWidget(root, status) {
       });
       const weatherURL = `https://api.open-meteo.com/v1/forecast?${params}`;
       const alertURL = `https://api.weather.gov/alerts/active?point=${location.latitude},${location.longitude}`;
+      const alerts = location.country === 'US'
+        ? fetch(alertURL, { signal: controller.signal, headers: { Accept: 'application/geo+json' } }).then((r) => r.ok ? r.json() : { features: [] })
+        : Promise.resolve({ features: [] });
       const [weatherResult, alertResult] = await Promise.allSettled([
         fetch(weatherURL, { signal: controller.signal }).then((r) => {
           if (!r.ok) throw new Error('Weather service unavailable');
           return r.json();
         }),
-        fetch(alertURL, { signal: controller.signal, headers: { Accept: 'application/geo+json' } }).then((r) => r.ok ? r.json() : { features: [] }),
+        alerts,
       ]);
       if (token !== request) return;
       if (weatherResult.status !== 'fulfilled') throw weatherResult.reason;
@@ -181,7 +184,7 @@ export function createWeatherWidget(root, status) {
         hourly: { times: future.map((item) => item.time), chances: future.map((item) => item.chance) },
         updatedAt: now,
       };
-      status(`${location.name || location.zip} weather updated`);
+      status(`${location.name || location.query} weather updated`);
       render(config);
     } catch (error) {
       if (error.name === 'AbortError' || token !== request) return;
