@@ -4,19 +4,13 @@ A real-time ocean picture frame for a large screen. It draws a living sea — si
 
 This project is a fork of [web-ocean](https://github.com/Noniv/web-ocean) by [Maksymilian Dendura](https://github.com/Noniv). The wave simulation, water shading, atmosphere, and HDR post-processing come from that renderer. This fork adds the picture-frame overlays, ocean sound that follows the water under the camera, and a sky that can follow a real place and time.
 
-The picture frame keeps a clock and live weather on the glass. This frame is the default place, Newnan, Georgia, in the early evening.
+The picture frame keeps a clock and live weather on the glass. This time lapse is Newnan, Georgia, starting at 7:56 PM on October 18, 2026. The clock keeps the real time, the weather card sits at the top left, and the sky runs forward from that moment. One real second advances the sky by 20 minutes, so the minute-long clip covers the night, the next morning, and the following afternoon.
 
-[![Clock and live weather over the ocean. Open the clip to hear the surf.](docs/pictureframe.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#pictureframe)
-
-[Play the 15-second clip with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/#pictureframe)
-
-A time lapse of that place runs from the night of January 1, 2026 through the following evening. The line at the top left is the simulated moment, and the clock keeps the real time.
-
-[![Time lapse from night through the following evening. Open the clip to hear the surf.](docs/timelapse.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
+[![Time lapse starting the evening of October 18, 2026. Open the clip to hear the surf.](docs/timelapse.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
 
 [Play the 60-second time lapse with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
 
-Both clips are hosted on GitHub Pages, where the browser can play them with the procedural surf included. Press play and use the sound control to hear the water.
+The clip is hosted on GitHub Pages, where the browser can play it with the procedural surf included. Press play and use the sound control to hear the water.
 
 ## Run it
 
@@ -61,7 +55,7 @@ The panel is an accordion. The sections are **General**, **Clock**, **Weather**,
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 
-Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads the current settings as `ocean-settings.json`. **Import** applies the recognized values and leaves every other setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Share link** copies a URL whose `s` parameter is the full configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
+Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** supports every setting shown in the panel, applies recognized values, and leaves every omitted setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. Export and Share preserve the user's hidden Static values while a Dynamic mode is active, so switching back to Static after an import or shared link restores the same manual setup. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
 URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
 
@@ -126,9 +120,9 @@ Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior
 
 Dynamic, Date and time, and Time lapse turn the view toward the sun and moon's daily arc, so they travel across the picture. The moon stays visible while it is above the horizon, including in daylight. Its phase, the angle of its lit side, and the tilt of its face come from the configured date, time, and place. It shows the near-side maria and bright craters, faint earthshine, and reddening near the horizon. In those modes the moon controls show the calculated elevation, azimuth, and phase, with size held at 2.5 and brightness at 4, and they cannot be edited. Static brings the manual moon controls back. In Static the sun lights the moon from wherever the sun sliders put it, so the phase comes from the angle between them and there is no phase slider. A moon near the sun is a thin crescent, a moon a quarter of the sky away is half lit, and only a moon opposite the sun is full. Static (Night) hides the sun and shows the phase slider, so the lit fraction is set directly and a crescent's horns point up. **Size (1 = true size)** defaults to 2.5 so the surface stays readable on a large screen, and the slider goes up to 6.
 
-At night the renderer places 8,404 naked-eye stars from the public-domain Yale Bright Star Catalogue in their J2000 positions. The celestial sphere follows local sidereal time, so recognizable constellations rise, cross the sky, and set for the selected date, time, and location. Haze, exposure, and bloom stay available. The sun position controls are hidden while a placed sky is calculating them.
+At night the renderer places 8,404 naked-eye stars from the public-domain Yale Bright Star Catalogue in their J2000 positions. The celestial sphere follows local sidereal time, so recognizable constellations rise, cross the sky, and set for the selected date, time, and location. Stars also twinkle independently to imitate atmospheric scintillation. The effect is subtle overhead and becomes stronger and more colorful near the horizon, where the starlight crosses more air. The **Twinkle** slider runs from 0 (steady) to 2 (pronounced) and defaults to 1. The moon does not twinkle because its visible disc averages out the turbulence. Haze, exposure, and bloom stay available. The sun position controls are hidden while a placed sky is calculating them.
 
-Star behavior has the same Static and Dynamic / real-world choice as the clouds. Dynamic hides density, brightness, catalog rotation, and night-sky brightness, then sets them from the current darkness, moonlight, haze, cloud cover, and sidereal time. A clear, moonless astronomical night shows the whole catalog against a faint airglow. Twilight, a bright moon, haze, and cloud cover leave the brighter stars and raise the sky glow. Static brings the manual values back. The random seed turns the catalog in a static sky; a placed sky uses the real orientation in either star mode.
+Star behavior has the same Static and Dynamic / real-world choice as the clouds. Dynamic hides density, brightness, twinkle, catalog rotation, and night-sky brightness, then sets them from the current darkness, moonlight, haze, cloud cover, sidereal time, and modeled atmospheric turbulence. Twinkle strength responds to cloud evolution, low- and high-level winds, wind shear, and clarity; each star's elevation still controls how much of that turbulence is visible. Dynamic / real-time recalculates it as conditions change, Date and time reproduces it for the chosen instant, and Time lapse evolves it with the simulated sky. A clear, moonless astronomical night shows the whole catalog against a faint airglow. Twilight, a bright moon, haze, and cloud cover leave the brighter stars and raise the sky glow. Static brings all manual values, including Twinkle, back. The random seed turns the catalog in a static sky; a placed sky uses the real orientation in either star mode.
 
 ![Cloud wind, coverage, and shape settings](docs/settings-clouds.png)
 
@@ -160,7 +154,7 @@ The surface mesh is a CDLOD quadtree with 17 levels. Vertices are 6.25 cm apart 
 
 The atmosphere follows Hillaire's approach, with transmittance, multiple-scattering, and sky-view lookup tables plus aerosol haze. Cloud noise octaves are filtered by pixel footprint, and silhouettes are anti-aliased analytically: the screen-space derivative of each layer's edge function sets the width of its opacity edge. Cloud transmittance along the sun direction dims the sunlight that reaches the water, and aerial perspective is applied over the sea.
 
-A celestial pass draws the phased moon and samples a color star map generated in-browser from the bundled Yale Bright Star Catalogue. Placed sky modes compute the sun, moon, celestial pole, and equatorial orientation from the location and chosen instant. South of the equator the view faces north, so the daily arc still crosses the picture.
+A celestial pass draws the phased moon and samples a color star map generated in-browser from the bundled Yale Bright Star Catalogue. Each catalog star carries a stable scintillation identity, which drives its own multi-frequency brightness and color variation. An atmospheric air-mass approximation strengthens the variation toward the horizon, while the environment map uses the mean star brightness so reflections remain stable. Placed sky modes compute the sun, moon, celestial pole, and equatorial orientation from the location and chosen instant. South of the equator the view faces north, so the daily arc still crosses the picture.
 
 ### Post-processing
 
@@ -201,7 +195,7 @@ The picture-frame additions in this fork — sound, clock, weather, placed sky m
 | `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
 | `server.mjs` | Tiny static server for development |
 | `build.mjs` | Builds `ocean.html` and `ocean.min.html` |
-| `docs/` | Picture-frame image, clip, settings screenshots, and the GitHub Pages player |
+| `docs/` | Time-lapse clip, settings screenshots, and the GitHub Pages player |
 
 ## License
 
