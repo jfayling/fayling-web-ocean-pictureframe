@@ -16,13 +16,18 @@ export function createStarMapData() {
     const colour = COLOURS[Math.min(6, raw[i + 6])] || COLOURS[3];
     const peak = Math.min(255, Math.round(255 * Math.pow(2.512, -0.34 * (mag - 1))));
     const radius = mag < 0.5 ? 3 : mag < 2 ? 2 : 1;
+    // Alpha is this star's scintillation id. Every texel of the splat shares it,
+    // and a brighter neighbour keeps its own id where the splats overlap.
+    const mark = (Math.imul((i / 7) + 1, 1103515245) >>> 0) % 255 + 1;
     for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
       const xx = (x + dx + STAR_MAP_WIDTH) % STAR_MAP_WIDTH, yy = y + dy;
       if (yy < 0 || yy >= STAR_MAP_HEIGHT) continue;
       const falloff = Math.exp(-(dx * dx + dy * dy) / Math.max(0.7, radius * 0.65));
       const o = (yy * STAR_MAP_WIDTH + xx) * 4;
+      const weight = (0.25 * colour[0] + 0.5 * colour[1] + 0.25 * colour[2]) * peak / 255 * falloff;
+      const prev = 0.25 * pixels[o] + 0.5 * pixels[o + 1] + 0.25 * pixels[o + 2];
+      if (weight > 0 && weight >= prev) pixels[o + 3] = mark;
       for (let c = 0; c < 3; c++) pixels[o + c] = Math.min(255, pixels[o + c] + Math.round(colour[c] * peak / 255 * falloff));
-      pixels[o + 3] = 255;
     }
   }
   return pixels;

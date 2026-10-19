@@ -50,6 +50,7 @@ export const P = {
   starMode: 'dynamic',
   starDensity: 0.55,
   starBrightness: 1.4,
+  starTwinkle: 1,
   starSeed: 137,
   nightBrightness: 1,
   cloudMode: 'dynamic',
@@ -889,8 +890,16 @@ async function main() {
     const clarity = 1 - 0.55 * weatherSmooth(3, 12, P.haze);
     const cover = Math.max(0, Math.min(1, Math.max(P.clouds, P.veil * 0.65)));
     const openSky = (1 - 0.45 * cover) * clarity;
+    // Scintillation follows the modeled air motion. Clear air makes it easier to see,
+    // while stronger low/high winds and evolving cloud systems imply more turbulence.
+    const windShear = Math.abs(P.highCloudWindSpeed - P.cloudWindSpeed);
+    const turbulence = Math.max(0, Math.min(1,
+      0.45 * Math.min(1, P.cloudEvolution / 1.2)
+      + 0.30 * Math.min(1, P.cloudWindSpeed / 18)
+      + 0.25 * Math.min(1, windShear / 35)));
     showDrivenSetting('starDensity', Math.min(1, darkness * openSky * (1 - 0.82 * moonlight)));
     showDrivenSetting('starBrightness', Math.min(5, (0.45 + 1.15 * darkness) * (1 - 0.22 * moonlight)));
+    showDrivenSetting('starTwinkle', Math.min(2, (0.5 + 0.9 * turbulence) * (0.7 + 0.3 * clarity)));
     showDrivenSetting('nightBrightness', Math.min(4, (0.35 + 0.25 * darkness + 1.7 * moonlight) * (0.65 + 0.35 * clarity)));
     // In an unplaced sky there is no geographic orientation, but Dynamic should still
     // turn the catalogue at the sidereal-day rate instead of hiding a frozen manual seed.
@@ -948,12 +957,8 @@ async function main() {
     // Static and placed skies light the moon from the sun. Static (Night) uses the phase slider.
     const light = night && !dynamic ? nightPhaseLight(moon) : sun;
     f[100] = light[0]; f[101] = light[1]; f[102] = light[2]; f[103] = P.moonSize;
-    const starDay = Math.trunc((skyInstant || new Date()).getTime() / 86400000);
-    const dynamicSeed = skyLocation
-      ? Math.abs(Math.trunc(skyLocation.latitude * 1000) * 31 + Math.trunc(skyLocation.longitude * 1000) * 17 + starDay)
-      : P.starSeed;
     f[104] = !day && P.stars ? P.starDensity : 0; f[105] = P.starBrightness;
-    f[106] = dynamic ? dynamicSeed : P.starSeed; f[107] = day ? 0 : P.nightBrightness;
+    f[106] = P.starTwinkle; f[107] = day ? 0 : P.nightBrightness;
     const pole = dynamic ? liveSky.poleDirection : [0, 1, 0];
     f[108] = pole[0]; f[109] = pole[1]; f[110] = pole[2]; f[111] = 0;
     f[112] = cloudScroll.lowX; f[113] = cloudScroll.lowZ; f[114] = 0; f[115] = cloudScroll.evolve;
@@ -1000,7 +1005,7 @@ async function main() {
     'highCloudWindSpeed', 'highCloudWindDir', 'highCloudScale', 'highCloudAltitude',
     'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
   ];
-  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starSeed', 'nightBrightness'];
+  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starTwinkle', 'starSeed', 'nightBrightness'];
   const MOON_DRIVEN = ['moon', 'moonElev', 'moonAzim', 'moonPhase', 'moonSize', 'moonBrightness'];
   let cloudManual = null;
   let starManual = null;
@@ -1146,6 +1151,7 @@ async function main() {
           ['dynamic', 'Dynamic / real-world'],
         ]],
         ['stars', 'Stars', 'toggle', 'Show', 'Hide'],
+        ['starTwinkle', 'Twinkle', 0, 2, 0.01, ''],
       ], groups: [
         { title: 'Appearance', settings: [
           ['starDensity', 'Density', 0, 1, 0.01, ''],
@@ -1235,13 +1241,16 @@ async function main() {
     }
   }
   let shareUrlInput = null;
+  function storedSettingValue(key) {
+    if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
+    if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
+    if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    return P[key];
+  }
   function settingsSnapshot() {
     const changed = {};
     for (const key of Object.keys(P)) {
-      const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key]
-        : starManual && STAR_DRIVEN.includes(key) ? starManual[key]
-        : moonManual && MOON_DRIVEN.includes(key) ? moonManual[key]
-        : P[key];
+      const stored = storedSettingValue(key);
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
     return changed;
@@ -1623,7 +1632,7 @@ async function main() {
   function refreshStarControls() {
     const day = P.skyMode === 'day';
     const manual = P.starMode !== 'dynamic';
-    const keys = ['starMode', 'stars', 'starSeed', ...STAR_DRIVEN];
+    const keys = ['starMode', 'stars', ...STAR_DRIVEN];
     if (day) {
       for (const key of keys) setSettingVisible(key, false);
     } else {
@@ -2022,7 +2031,8 @@ async function main() {
     if (kind === 'lut') needLUT = true;
     if (kind === 'clock') applyClock();
     if (kind === 'weather') applyWeather();
-    if (kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
+    // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -2043,7 +2053,9 @@ async function main() {
     return undefined;
   }
   function exportSettings() {
-    const blob = new Blob([JSON.stringify(P, null, 2) + '\n'], { type: 'application/json' });
+    const exported = {};
+    for (const key of Object.keys(P)) exported[key] = storedSettingValue(key);
+    const blob = new Blob([JSON.stringify(exported, null, 2) + '\n'], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

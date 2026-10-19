@@ -241,7 +241,7 @@ struct Frame {
   cloudP:   vec4f,     // altitude km, coverage, edge softness, -
   moonDir:  vec4f,     // xyz towards moon, w = moon brightness
   moonLight: vec4f,    // xyz from moon towards sun, w = moon angular-radius multiplier
-  nightP:   vec4f,     // star density, brightness, random seed, night-sky brightness
+  nightP:   vec4f,     // star density, brightness, twinkle, night-sky brightness
   moonUp:   vec4f,     // xyz towards the celestial north pole (orients the lunar face)
   cloudWind: vec4f,    // low-layer scroll xz (km), -, integrated evolution
   cloudHigh: vec4f,    // high-layer scroll xz (km), -, horizontal scale
@@ -1227,7 +1227,58 @@ fn sunDisk(dir: vec3f) -> vec3f {
   return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01));
 }
 
-fn starField(dir: vec3f, pixAng: f32) -> vec3f {
+// Point-sample the star id. Linear filtering would blend neighbouring rhythms;
+// the 2x2 under the sample is the same footprint the colour lookup uses.
+fn starMark(uv: vec2f) -> f32 {
+  let dims = vec2i(textureDimensions(starMap));
+  let base = vec2i(floor(uv * vec2f(dims) - 0.5));
+  var best = 0.0;
+  for (var j = 0; j <= 1; j++) {
+    for (var i = 0; i <= 1; i++) {
+      var c = base + vec2i(i, j);
+      c.x = (c.x % dims.x + dims.x) % dims.x;
+      c.y = clamp(c.y, 0, dims.y - 1);
+      best = max(best, textureLoad(starMap, c, 0).a);
+    }
+  }
+  return best;
+}
+
+// Atmospheric scintillation. A point source flickers more as its line of sight
+// crosses a thicker slab of turbulent air, and low bright stars shift colour.
+// Frequencies are an integer number of cycles over the 600 s simulation loop,
+// so the wrap does not pop. The environment cube asks for the mean (scintillate
+// false) because a face is rebuilt only every few frames.
+fn starScintillation(dir: vec3f, id: f32, peak: f32) -> vec3f {
+  let elev = asin(clamp(dir.y, 0.0, 1.0)) * 57.2957795;
+  let air = min(12.0, 1.0 / (max(dir.y, 0.0) + 0.50572 * pow(elev + 6.07995, -1.6364)));
+  let sigma = min(0.88, F.nightP.z * 0.055 * pow(air, 1.22));
+  let n = u32(id * 255.0 + 0.5);
+  let h1 = pcgHash(n);
+  let h2 = pcgHash(h1 ^ 0x9e3779b9u);
+  let h3 = pcgHash(h2 ^ 0x85ebca6bu);
+  let p1 = f32(h1) * (6.28318530718 / 4294967296.0);
+  let p2 = f32(h2) * (6.28318530718 / 4294967296.0);
+  let p3 = f32(h3) * (6.28318530718 / 4294967296.0);
+  // A slow function of direction, so stars that share an 8-bit id still diverge,
+  // while one splat (a fraction of a degree) stays in phase with itself.
+  let sight = dot(dir, vec3f(4.0, 9.0, 2.0));
+  let t = F.camPos.w;
+  let burst = 0.62 + 0.38 * sin(t * (6.28318530718 * 0.35) + p1 + sight);
+  let flick = sin(t * (6.28318530718 * 2.3) + p2 + sight) * 0.56
+            + sin(t * (6.28318530718 * 3.7) + p3 + sight) * 0.30
+            + sin(t * (6.28318530718 * 6.1) + p1 + sight) * 0.14;
+  let flicker = 1.0 + sigma * burst * flick;
+  let chroma = sigma * 0.5 * smoothstep(1.8, 5.5, air) * smoothstep(0.22, 0.8, peak);
+  let tint = vec3f(
+    sin(t * (6.28318530718 * 2.9) + p2 + sight),
+    sin(t * (6.28318530718 * 2.9) + p3 + sight + 2.094395),
+    sin(t * (6.28318530718 * 2.9) + p1 + sight + 4.188790)
+  );
+  return max(vec3f(0.05), vec3f(flicker) + tint * chroma);
+}
+
+fn starField(dir: vec3f, pixAng: f32, scintillate: bool) -> vec3f {
   let night = 1.0 - smoothstep(-0.15, -0.055, F.sunDir.y);
   if (night <= 0.0 || dir.y <= 0.0 || F.nightP.x <= 0.0) { return vec3f(0.0); }
   let eq = vec3f(dot(dir, F.starX.xyz), dot(dir, F.starY.xyz), dot(dir, F.moonUp.xyz));
@@ -1240,7 +1291,9 @@ fn starField(dir: vec3f, pixAng: f32) -> vec3f {
   let peak = max(stars.r, max(stars.g, stars.b));
   let keep = select(1.0, smoothstep(cutoff, min(cutoff + 0.07, 1.0), peak), cutoff > 0.001);
   let extinction = sampleTrans(camR(), max(dir.y, 0.0));
-  return stars * gain * keep * F.nightP.y * night * extinction;
+  let col = stars * gain * keep * F.nightP.y * night * extinction;
+  if (!scintillate || F.nightP.z <= 0.001 || peak <= 0.001) { return col; }
+  return col * starScintillation(dir, starMark(uv), peak);
 }
 
 const MOON_ANG_R: f32 = 0.00452;
@@ -1326,12 +1379,12 @@ fn moonDisk(dir: vec3f, pixAng: f32) -> vec4f {
 
 // cover is the cloud's geometric opacity. Lighting can stay soft while a cloud that is
 // already visible hides the stars and the moon.
-fn nightSky(dir: vec3f, pixAng: f32, cover: f32) -> vec3f {
+fn nightSky(dir: vec3f, pixAng: f32, cover: f32, scintillate: bool) -> vec3f {
   let night = 1.0 - smoothstep(-0.12, 0.015, F.sunDir.y);
   let base = vec3f(0.002, 0.004, 0.009) * F.nightP.w * night * (0.35 + 0.65 * max(dir.y, 0.0));
   let m = moonDisk(dir, pixAng);
   let starCover = smoothstep(0.015, 0.08, cover);
-  let points = (starField(dir, pixAng) * (1.0 - m.a) + m.rgb) * (1.0 - starCover);
+  let points = (starField(dir, pixAng, scintillate) * (1.0 - m.a) + m.rgb) * (1.0 - starCover);
   return base * (1.0 - cover) + points;
 }
 
@@ -1343,7 +1396,7 @@ fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var sunT = 1.0;
   let cl = cloudLayers(dir, pixAng, vec2f(-1.0), &sunT);
   L = L * (1.0 - cl.a) + cl.rgb;
-  L += nightSky(dir, pixAng, cl.a);
+  L += nightSky(dir, pixAng, cl.a, false);
   if (withSun) { L += sunDisk(dir) * sunT; }
   return L;
 }
@@ -1506,7 +1559,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a, true) + cl.rgb + sunDisk(dir) * sunT;
   return vec4f(L, 1.0);
 }
 `;
@@ -2271,13 +2324,18 @@ function createStarMapData() {
     const colour = COLOURS[Math.min(6, raw[i + 6])] || COLOURS[3];
     const peak = Math.min(255, Math.round(255 * Math.pow(2.512, -0.34 * (mag - 1))));
     const radius = mag < 0.5 ? 3 : mag < 2 ? 2 : 1;
+    // Alpha is this star's scintillation id. Every texel of the splat shares it,
+    // and a brighter neighbour keeps its own id where the splats overlap.
+    const mark = (Math.imul((i / 7) + 1, 1103515245) >>> 0) % 255 + 1;
     for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
       const xx = (x + dx + STAR_MAP_WIDTH) % STAR_MAP_WIDTH, yy = y + dy;
       if (yy < 0 || yy >= STAR_MAP_HEIGHT) continue;
       const falloff = Math.exp(-(dx * dx + dy * dy) / Math.max(0.7, radius * 0.65));
       const o = (yy * STAR_MAP_WIDTH + xx) * 4;
+      const weight = (0.25 * colour[0] + 0.5 * colour[1] + 0.25 * colour[2]) * peak / 255 * falloff;
+      const prev = 0.25 * pixels[o] + 0.5 * pixels[o + 1] + 0.25 * pixels[o + 2];
+      if (weight > 0 && weight >= prev) pixels[o + 3] = mark;
       for (let c = 0; c < 3; c++) pixels[o + c] = Math.min(255, pixels[o + c] + Math.round(colour[c] * peak / 255 * falloff));
-      pixels[o + 3] = 255;
     }
   }
   return pixels;
@@ -3007,6 +3065,7 @@ const P = {
   starMode: 'dynamic',
   starDensity: 0.55,
   starBrightness: 1.4,
+  starTwinkle: 1,
   starSeed: 137,
   nightBrightness: 1,
   cloudMode: 'dynamic',
@@ -3846,8 +3905,16 @@ async function main() {
     const clarity = 1 - 0.55 * weatherSmooth(3, 12, P.haze);
     const cover = Math.max(0, Math.min(1, Math.max(P.clouds, P.veil * 0.65)));
     const openSky = (1 - 0.45 * cover) * clarity;
+    // Scintillation follows the modeled air motion. Clear air makes it easier to see,
+    // while stronger low/high winds and evolving cloud systems imply more turbulence.
+    const windShear = Math.abs(P.highCloudWindSpeed - P.cloudWindSpeed);
+    const turbulence = Math.max(0, Math.min(1,
+      0.45 * Math.min(1, P.cloudEvolution / 1.2)
+      + 0.30 * Math.min(1, P.cloudWindSpeed / 18)
+      + 0.25 * Math.min(1, windShear / 35)));
     showDrivenSetting('starDensity', Math.min(1, darkness * openSky * (1 - 0.82 * moonlight)));
     showDrivenSetting('starBrightness', Math.min(5, (0.45 + 1.15 * darkness) * (1 - 0.22 * moonlight)));
+    showDrivenSetting('starTwinkle', Math.min(2, (0.5 + 0.9 * turbulence) * (0.7 + 0.3 * clarity)));
     showDrivenSetting('nightBrightness', Math.min(4, (0.35 + 0.25 * darkness + 1.7 * moonlight) * (0.65 + 0.35 * clarity)));
     // In an unplaced sky there is no geographic orientation, but Dynamic should still
     // turn the catalogue at the sidereal-day rate instead of hiding a frozen manual seed.
@@ -3905,12 +3972,8 @@ async function main() {
     // Static and placed skies light the moon from the sun. Static (Night) uses the phase slider.
     const light = night && !dynamic ? nightPhaseLight(moon) : sun;
     f[100] = light[0]; f[101] = light[1]; f[102] = light[2]; f[103] = P.moonSize;
-    const starDay = Math.trunc((skyInstant || new Date()).getTime() / 86400000);
-    const dynamicSeed = skyLocation
-      ? Math.abs(Math.trunc(skyLocation.latitude * 1000) * 31 + Math.trunc(skyLocation.longitude * 1000) * 17 + starDay)
-      : P.starSeed;
     f[104] = !day && P.stars ? P.starDensity : 0; f[105] = P.starBrightness;
-    f[106] = dynamic ? dynamicSeed : P.starSeed; f[107] = day ? 0 : P.nightBrightness;
+    f[106] = P.starTwinkle; f[107] = day ? 0 : P.nightBrightness;
     const pole = dynamic ? liveSky.poleDirection : [0, 1, 0];
     f[108] = pole[0]; f[109] = pole[1]; f[110] = pole[2]; f[111] = 0;
     f[112] = cloudScroll.lowX; f[113] = cloudScroll.lowZ; f[114] = 0; f[115] = cloudScroll.evolve;
@@ -3957,7 +4020,7 @@ async function main() {
     'highCloudWindSpeed', 'highCloudWindDir', 'highCloudScale', 'highCloudAltitude',
     'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
   ];
-  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starSeed', 'nightBrightness'];
+  const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starTwinkle', 'starSeed', 'nightBrightness'];
   const MOON_DRIVEN = ['moon', 'moonElev', 'moonAzim', 'moonPhase', 'moonSize', 'moonBrightness'];
   let cloudManual = null;
   let starManual = null;
@@ -4103,6 +4166,7 @@ async function main() {
           ['dynamic', 'Dynamic / real-world'],
         ]],
         ['stars', 'Stars', 'toggle', 'Show', 'Hide'],
+        ['starTwinkle', 'Twinkle', 0, 2, 0.01, ''],
       ], groups: [
         { title: 'Appearance', settings: [
           ['starDensity', 'Density', 0, 1, 0.01, ''],
@@ -4192,13 +4256,16 @@ async function main() {
     }
   }
   let shareUrlInput = null;
+  function storedSettingValue(key) {
+    if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
+    if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
+    if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    return P[key];
+  }
   function settingsSnapshot() {
     const changed = {};
     for (const key of Object.keys(P)) {
-      const stored = cloudManual && CLOUD_DRIVEN.includes(key) ? cloudManual[key]
-        : starManual && STAR_DRIVEN.includes(key) ? starManual[key]
-        : moonManual && MOON_DRIVEN.includes(key) ? moonManual[key]
-        : P[key];
+      const stored = storedSettingValue(key);
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
     return changed;
@@ -4580,7 +4647,7 @@ async function main() {
   function refreshStarControls() {
     const day = P.skyMode === 'day';
     const manual = P.starMode !== 'dynamic';
-    const keys = ['starMode', 'stars', 'starSeed', ...STAR_DRIVEN];
+    const keys = ['starMode', 'stars', ...STAR_DRIVEN];
     if (day) {
       for (const key of keys) setSettingVisible(key, false);
     } else {
@@ -4979,7 +5046,8 @@ async function main() {
     if (kind === 'lut') needLUT = true;
     if (kind === 'clock') applyClock();
     if (kind === 'weather') applyWeather();
-    if (kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
+    // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -5000,7 +5068,9 @@ async function main() {
     return undefined;
   }
   function exportSettings() {
-    const blob = new Blob([JSON.stringify(P, null, 2) + '\n'], { type: 'application/json' });
+    const exported = {};
+    for (const key of Object.keys(P)) exported[key] = storedSettingValue(key);
+    const blob = new Blob([JSON.stringify(exported, null, 2) + '\n'], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

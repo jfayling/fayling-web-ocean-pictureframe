@@ -420,7 +420,58 @@ fn sunDisk(dir: vec3f) -> vec3f {
   return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01));
 }
 
-fn starField(dir: vec3f, pixAng: f32) -> vec3f {
+// Point-sample the star id. Linear filtering would blend neighbouring rhythms;
+// the 2x2 under the sample is the same footprint the colour lookup uses.
+fn starMark(uv: vec2f) -> f32 {
+  let dims = vec2i(textureDimensions(starMap));
+  let base = vec2i(floor(uv * vec2f(dims) - 0.5));
+  var best = 0.0;
+  for (var j = 0; j <= 1; j++) {
+    for (var i = 0; i <= 1; i++) {
+      var c = base + vec2i(i, j);
+      c.x = (c.x % dims.x + dims.x) % dims.x;
+      c.y = clamp(c.y, 0, dims.y - 1);
+      best = max(best, textureLoad(starMap, c, 0).a);
+    }
+  }
+  return best;
+}
+
+// Atmospheric scintillation. A point source flickers more as its line of sight
+// crosses a thicker slab of turbulent air, and low bright stars shift colour.
+// Frequencies are an integer number of cycles over the 600 s simulation loop,
+// so the wrap does not pop. The environment cube asks for the mean (scintillate
+// false) because a face is rebuilt only every few frames.
+fn starScintillation(dir: vec3f, id: f32, peak: f32) -> vec3f {
+  let elev = asin(clamp(dir.y, 0.0, 1.0)) * 57.2957795;
+  let air = min(12.0, 1.0 / (max(dir.y, 0.0) + 0.50572 * pow(elev + 6.07995, -1.6364)));
+  let sigma = min(0.88, F.nightP.z * 0.055 * pow(air, 1.22));
+  let n = u32(id * 255.0 + 0.5);
+  let h1 = pcgHash(n);
+  let h2 = pcgHash(h1 ^ 0x9e3779b9u);
+  let h3 = pcgHash(h2 ^ 0x85ebca6bu);
+  let p1 = f32(h1) * (6.28318530718 / 4294967296.0);
+  let p2 = f32(h2) * (6.28318530718 / 4294967296.0);
+  let p3 = f32(h3) * (6.28318530718 / 4294967296.0);
+  // A slow function of direction, so stars that share an 8-bit id still diverge,
+  // while one splat (a fraction of a degree) stays in phase with itself.
+  let sight = dot(dir, vec3f(4.0, 9.0, 2.0));
+  let t = F.camPos.w;
+  let burst = 0.62 + 0.38 * sin(t * (6.28318530718 * 0.35) + p1 + sight);
+  let flick = sin(t * (6.28318530718 * 2.3) + p2 + sight) * 0.56
+            + sin(t * (6.28318530718 * 3.7) + p3 + sight) * 0.30
+            + sin(t * (6.28318530718 * 6.1) + p1 + sight) * 0.14;
+  let flicker = 1.0 + sigma * burst * flick;
+  let chroma = sigma * 0.5 * smoothstep(1.8, 5.5, air) * smoothstep(0.22, 0.8, peak);
+  let tint = vec3f(
+    sin(t * (6.28318530718 * 2.9) + p2 + sight),
+    sin(t * (6.28318530718 * 2.9) + p3 + sight + 2.094395),
+    sin(t * (6.28318530718 * 2.9) + p1 + sight + 4.188790)
+  );
+  return max(vec3f(0.05), vec3f(flicker) + tint * chroma);
+}
+
+fn starField(dir: vec3f, pixAng: f32, scintillate: bool) -> vec3f {
   let night = 1.0 - smoothstep(-0.15, -0.055, F.sunDir.y);
   if (night <= 0.0 || dir.y <= 0.0 || F.nightP.x <= 0.0) { return vec3f(0.0); }
   let eq = vec3f(dot(dir, F.starX.xyz), dot(dir, F.starY.xyz), dot(dir, F.moonUp.xyz));
@@ -433,7 +484,9 @@ fn starField(dir: vec3f, pixAng: f32) -> vec3f {
   let peak = max(stars.r, max(stars.g, stars.b));
   let keep = select(1.0, smoothstep(cutoff, min(cutoff + 0.07, 1.0), peak), cutoff > 0.001);
   let extinction = sampleTrans(camR(), max(dir.y, 0.0));
-  return stars * gain * keep * F.nightP.y * night * extinction;
+  let col = stars * gain * keep * F.nightP.y * night * extinction;
+  if (!scintillate || F.nightP.z <= 0.001 || peak <= 0.001) { return col; }
+  return col * starScintillation(dir, starMark(uv), peak);
 }
 
 const MOON_ANG_R: f32 = 0.00452;
@@ -519,12 +572,12 @@ fn moonDisk(dir: vec3f, pixAng: f32) -> vec4f {
 
 // cover is the cloud's geometric opacity. Lighting can stay soft while a cloud that is
 // already visible hides the stars and the moon.
-fn nightSky(dir: vec3f, pixAng: f32, cover: f32) -> vec3f {
+fn nightSky(dir: vec3f, pixAng: f32, cover: f32, scintillate: bool) -> vec3f {
   let night = 1.0 - smoothstep(-0.12, 0.015, F.sunDir.y);
   let base = vec3f(0.002, 0.004, 0.009) * F.nightP.w * night * (0.35 + 0.65 * max(dir.y, 0.0));
   let m = moonDisk(dir, pixAng);
   let starCover = smoothstep(0.015, 0.08, cover);
-  let points = (starField(dir, pixAng) * (1.0 - m.a) + m.rgb) * (1.0 - starCover);
+  let points = (starField(dir, pixAng, scintillate) * (1.0 - m.a) + m.rgb) * (1.0 - starCover);
   return base * (1.0 - cover) + points;
 }
 
@@ -536,7 +589,7 @@ fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var sunT = 1.0;
   let cl = cloudLayers(dir, pixAng, vec2f(-1.0), &sunT);
   L = L * (1.0 - cl.a) + cl.rgb;
-  L += nightSky(dir, pixAng, cl.a);
+  L += nightSky(dir, pixAng, cl.a, false);
   if (withSun) { L += sunDisk(dir) * sunT; }
   return L;
 }
