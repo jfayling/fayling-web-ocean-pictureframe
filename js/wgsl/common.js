@@ -33,7 +33,7 @@ struct Frame {
   moonLight: vec4f,    // xyz from moon towards sun, w = moon angular-radius multiplier
   nightP:   vec4f,     // star density, brightness, twinkle, night-sky brightness
   moonUp:   vec4f,     // xyz towards the celestial north pole (orients the lunar face)
-  cloudWind: vec4f,    // low-layer scroll xz (km), -, integrated evolution
+  cloudWind: vec4f,    // low-layer scroll xz (km), -, shape-evolution generations
   cloudHigh: vec4f,    // high-layer scroll xz (km), -, horizontal scale
   cloudShape: vec4f,   // low scale, high altitude km, edge softness, -
   cloudLight: vec4f,   // low/high optical density, silver lining, ambient light

@@ -256,20 +256,46 @@ fn cloudFbm(p: vec2f, fp: f32, oct: i32, billow: f32) -> f32 {
 }
 // Signed "edge" functions (cloud where > 0) and their density ramps. The edge value is
 // what the sky pass differentiates (fwidth) to anti-alias the cloud silhouettes analytically.
+// Shape evolution is a generation clock. Each generation crossfades the domain warp to a
+// new offset so a mass bulges, splits, and merges. Harmonics must be integers: the clock
+// wraps at CLOUD_MORPH_WRAP, and an integer multiple lands on the same boundary.
+const CLOUD_MORPH_WRAP: u32 = 4096u;
+fn morphOffset(gen: f32, salt: u32) -> vec2f {
+  let idx = u32(gen) % CLOUD_MORPH_WRAP;
+  let n = pcgHash(idx + salt);
+  let m = pcgHash(idx + salt * 3u + 11u);
+  let a = f32(n) * (6.28318530718 / 4294967296.0);
+  let r = 1.5 + f32(m & 255u) * (1.5 / 255.0);
+  return vec2f(cos(a), sin(a)) * r;
+}
+fn morphFlow(t: f32, salt: u32) -> vec2f {
+  let i = floor(t);
+  let f = t - i;
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(morphOffset(i, salt), morphOffset(i + 1.0, salt), u);
+}
 fn lowEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let scale = max(F.cloudShape.x, 0.1);
   // Scroll and evolution are integrated offsets, so a wind change cannot teleport the layer.
   let world = q - F.cloudWind.xy;
   var p = world * (0.38 / scale);
-  let evolve = F.cloudWind.w * 0.001;
+  let morphT = F.cloudWind.w;
+  // Detail churns several times per large-mass generation.
+  let detail = morphFlow(morphT * 6.0, 17u);
   let w = vec2f(
-    gnoise(p * 0.3 + vec2f(1.7 + evolve, 9.2 - evolve * 0.37)),
-    gnoise(p * 0.3 + vec2f(8.3 - evolve * 0.61, 2.8 + evolve))
+    gnoise(p * 0.3 + vec2f(1.7, 9.2) + detail),
+    gnoise(p * 0.3 + vec2f(8.3, 2.8) + vec2f(detail.y, -detail.x))
   );
   p += w * 1.4;
   // slightly elongated cells (cloud streets), mildly billowy small scales for ragged edges
   let base = cloudFbm(p * vec2f(1.0, 1.7), fp * 0.65 / scale, oct, 0.35) * 1.3 + 0.5;
-  let large = gnoise(world * (0.05 / scale) + vec2f(3.1 + evolve * 0.15, 1.3)) * 0.7;
+  let lf = 0.05 / scale;
+  let form = morphFlow(morphT * 2.0, 29u);
+  let lw = vec2f(
+    gnoise(world * (lf * 0.5) + form + vec2f(4.2, 1.1)),
+    gnoise(world * (lf * 0.5) + vec2f(form.y, -form.x) + vec2f(8.8, 2.4))
+  );
+  let large = gnoise(world * lf + lw * 0.9 + vec2f(3.1, 1.3)) * 0.7;
   return base + large - (1.0 - F.cloudP.y);
 }
 fn lowSoft(fp: f32) -> f32 { return (0.38 + min(fp * 0.65, 1.0) * 0.3) * F.cloudShape.z; }
@@ -279,11 +305,18 @@ fn lowDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
 fn highEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let scale = max(F.cloudHigh.w, 0.1);
   let world = q - F.cloudHigh.xy;
-  let evolve = F.cloudWind.w * 0.00035;
-  // altostratus deck: smooth, slightly fibrous
-  let p = CLOUD_ROT * (world * vec2f(0.09, 0.20) / scale) + vec2f(evolve, -evolve * 0.2);
+  let morphT = F.cloudWind.w;
+  // altostratus deck: smooth, slightly fibrous, and slower to reshape than the cumulus
+  let fiber = morphFlow(morphT * 2.0, 47u);
+  let p = CLOUD_ROT * (world * vec2f(0.09, 0.20) / scale) + fiber;
   let n = cloudFbm(p, fp * 0.2 / scale, oct, 0.0) * 1.25 + 0.5;
-  let big = gnoise(world * (0.012 / scale) + vec2f(7.0 - evolve * 0.2, 3.0)) * 0.6;
+  let hf = 0.012 / scale;
+  let form = morphFlow(morphT, 71u);
+  let hw = vec2f(
+    gnoise(world * (hf * 0.45) + form * 0.8 + vec2f(2.2, 6.1)),
+    gnoise(world * (hf * 0.45) + vec2f(form.y, -form.x) * 0.8 + vec2f(7.4, 1.6))
+  );
+  let big = gnoise(world * hf + hw * 0.7 + vec2f(7.0, 3.0)) * 0.6;
   return n + big - (1.0 - F.atmo.z);
 }
 fn highSoft(fp: f32) -> f32 { return (0.85 + min(fp * 0.2, 1.0) * 0.3) * F.cloudShape.z; }

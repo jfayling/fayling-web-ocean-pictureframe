@@ -1012,18 +1012,35 @@ async function main() {
   let moonManual = null;
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
+  // Time lapse advances the sun, moon, and stars by `lapsePace` sky minutes per real
+  // second. Cloud drift and shape evolution use that same sky clock; a real-time sky
+  // keeps a scale of 1 so wind stays in wall-clock m/s.
   const cloudScroll = { lowX: 0, lowZ: 0, highX: 0, highZ: 0, evolve: 0 };
+  // Must match CLOUD_MORPH_WRAP in the cloud shader. Wrapping on a generation boundary
+  // keeps the crossfade seamless and the phase exact in f32 over a long time lapse.
+  const CLOUD_MORPH_WRAP = 4096;
+  // Sky seconds for one high-deck shape generation when cloud evolution is 1.
+  // Low cumulus uses a faster integer harmonic of this clock.
+  const CLOUD_HIGH_GENERATION_S = 6 * 3600;
+  function cloudSkyScale() {
+    if (P.skyMode !== 'lapse') return 1;
+    const pace = Math.max(1, Number(P.lapsePace) || 20);
+    return pace * 60;
+  }
   function advanceCloudMotion(dt) {
     if (!P.cloudMotion || dt <= 0) return;
+    const skyDt = dt * cloudSkyScale();
     const low = P.cloudWindDir * D2R;
     const lowSpeed = P.cloudWindSpeed * 0.001;
-    cloudScroll.lowX += Math.sin(low) * lowSpeed * dt;
-    cloudScroll.lowZ += -Math.cos(low) * lowSpeed * dt;
-    cloudScroll.evolve += P.cloudEvolution * dt;
+    cloudScroll.lowX += Math.sin(low) * lowSpeed * skyDt;
+    cloudScroll.lowZ += -Math.cos(low) * lowSpeed * skyDt;
     const high = P.highCloudWindDir * D2R;
     const highSpeed = P.highCloudWindSpeed * 0.001;
-    cloudScroll.highX += Math.sin(high) * highSpeed * dt;
-    cloudScroll.highZ += -Math.cos(high) * highSpeed * dt;
+    cloudScroll.highX += Math.sin(high) * highSpeed * skyDt;
+    cloudScroll.highZ += -Math.cos(high) * highSpeed * skyDt;
+    cloudScroll.evolve += P.cloudEvolution * skyDt / CLOUD_HIGH_GENERATION_S;
+    cloudScroll.evolve %= CLOUD_MORPH_WRAP;
+    if (cloudScroll.evolve < 0) cloudScroll.evolve += CLOUD_MORPH_WRAP;
   }
   const SETTINGS_KEY = 'web-ocean-settings-v2';
   const SECTIONS = [
