@@ -93,6 +93,9 @@ export const P = {
   clockPosition: 'top-center',
   clockOpacity: 0.9,
   clockBackground: 0.18,
+  compass: true,
+  compassPosition: 'top',
+  compassTilt: true,
   weather: true,
   weatherZip: '30265',
   weatherRefresh: 15,
@@ -996,9 +999,10 @@ async function main() {
   });
   const panelBody = document.getElementById('panel-body');
   const BOOL_KEYS = new Set(['sound', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+    'compass', 'compassTilt',
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
     'moon', 'stars', 'cloudMotion']);
-  const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
+  const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
     'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode']);
   const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
@@ -1078,6 +1082,16 @@ async function main() {
         ['clockColor', 'Color', 'color'],
         ['clockOpacity', 'Opacity', 0.2, 1, 0.01, 'clock'],
         ['clockBackground', 'Background', 0, 0.8, 0.01, 'clock'],
+      ] },
+    ] },
+    { title: 'Compass', groups: [
+      { title: 'Display', settings: [
+        ['compass', 'Compass', 'toggle', 'On', 'Off'],
+        ['compassPosition', 'Position', 'select', [
+          ['top', 'Top'],
+          ['bottom', 'Bottom'],
+        ]],
+        ['compassTilt', 'Tilt angle', 'toggle', 'Show', 'Hide'],
       ] },
     ] },
     { title: 'Weather', groups: [
@@ -1352,6 +1366,7 @@ async function main() {
     document.getElementById('toolbar').style.display = P.showButtons ? '' : 'none';
     panel.style.top = P.showButtons ? '50px' : '10px';
     panel.style.maxHeight = P.showButtons ? 'calc(100vh - 60px)' : 'calc(100vh - 20px)';
+    layoutCompass();
   }
   const clockWidget = document.getElementById('clock-widget');
   const clockTime = clockWidget.querySelector('.clock-time');
@@ -1377,6 +1392,11 @@ async function main() {
     clockWidget.style.opacity = P.clockOpacity;
     clockWidget.style.backgroundColor = `rgba(11, 15, 20, ${P.clockBackground})`;
     clockWidget.style.textShadow = P.clockBackground < 0.35 ? '0 2px 8px #000c' : 'none';
+    updateClock();
+    updateSkyReadout();
+    layoutCompass();
+  }
+  function placeClock() {
     clockWidget.style.top = clockWidget.style.right = clockWidget.style.bottom =
       clockWidget.style.left = clockWidget.style.transform = '';
     const edge = '32px';
@@ -1388,8 +1408,151 @@ async function main() {
       clockWidget.style.left = '50%';
       clockWidget.style.transform = 'translateX(-50%)';
     }
-    updateClock();
-    updateSkyReadout();
+  }
+  const compassWidget = document.getElementById('compass-widget');
+  const compassHeading = compassWidget.querySelector('.compass-heading');
+  const compassWindow = compassWidget.querySelector('.compass-window');
+  const compassTape = compassWidget.querySelector('.compass-tape');
+  const compassTilt = compassWidget.querySelector('.compass-tilt');
+  const COMPASS_PX = 5.2;
+  const COMPASS_POINTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  let compassViewWidth = 0;
+  let compassTapeBuilt = false;
+  function wrap360(deg) {
+    deg %= 360;
+    return deg < 0 ? deg + 360 : deg;
+  }
+  // Placed skies use geographic north. North of the equator the default view looks south,
+  // so yaw 0 is heading 180. South of the equator that view looks north. A static sky has
+  // no place: azimuth 0, straight ahead, is north.
+  function lookHeadingDegrees() {
+    const yawDeg = cam.yaw / D2R;
+    if (!skyUsesPlace()) return wrap360(yawDeg);
+    if (skyLocation && skyLocation.latitude < 0) return wrap360(yawDeg);
+    return wrap360(yawDeg + 180);
+  }
+  function formatTilt(deg) {
+    const rounded = Math.round(deg * 10) / 10;
+    const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '';
+    return `Tilt ${sign}${Math.abs(rounded).toFixed(1)}°`;
+  }
+  function buildCompassTape() {
+    if (compassTapeBuilt) return;
+    compassTapeBuilt = true;
+    const frag = document.createDocumentFragment();
+    for (let deg = 0; deg <= 720; deg += 5) {
+      const shown = deg % 360;
+      const point = shown % 45 === 0 ? COMPASS_POINTS[(shown / 45) % 8] : '';
+      const inter = point && shown % 90 !== 0;
+      const major = shown % 15 === 0;
+      const tick = document.createElement('span');
+      tick.className = 'compass-tick' + (point && !inter ? ' cardinal' : inter ? ' inter' : major ? ' major' : '');
+      tick.style.left = (deg * COMPASS_PX) + 'px';
+      frag.appendChild(tick);
+      if (point || major) {
+        const label = document.createElement('span');
+        label.className = 'compass-label' + (point && !inter ? ' cardinal' : inter ? ' inter' : '');
+        label.style.left = (deg * COMPASS_PX) + 'px';
+        label.textContent = point || String(shown);
+        frag.appendChild(label);
+      }
+    }
+    compassTape.style.width = (720 * COMPASS_PX) + 'px';
+    compassTape.appendChild(frag);
+  }
+  function compassAtBottom() {
+    return P.compassPosition === 'bottom';
+  }
+  function anchorCompass(offset) {
+    const bottom = compassAtBottom();
+    compassWidget.style.top = bottom ? 'auto' : offset + 'px';
+    compassWidget.style.bottom = bottom ? offset + 'px' : 'auto';
+    compassWidget.style.transform = 'translateX(-50%)';
+  }
+  function edgeObstacles() {
+    const bottom = compassAtBottom();
+    const obstacles = [];
+    if (!bottom) {
+      const toolbar = document.getElementById('toolbar');
+      if (toolbar.style.display !== 'none') obstacles.push(toolbar);
+      const hud = document.getElementById('hud');
+      if (hud.style.display !== 'none') obstacles.push(hud);
+    }
+    const weather = document.getElementById('weather-widget');
+    const position = weather.dataset.position || '';
+    if (!weather.hidden && position.startsWith(bottom ? 'bottom' : 'top')) obstacles.push(weather);
+    const vh = window.innerHeight;
+    return obstacles
+      .map((node) => node.getBoundingClientRect())
+      .filter((rect) => rect.width > 2 && rect.height > 2
+        && (bottom ? rect.bottom > vh - 240 && rect.top < vh - 8 : rect.bottom > 8 && rect.top < 240));
+  }
+  function layoutCompass() {
+    placeClock();
+    const show = P.compass || P.compassTilt;
+    compassWidget.hidden = !show;
+    compassHeading.hidden = !P.compass;
+    compassWindow.hidden = !P.compass;
+    compassTilt.hidden = !P.compassTilt;
+    if (!show) return;
+    if (P.compass) buildCompassTape();
+    anchorCompass(18);
+    if (!P.compass) {
+      compassWidget.style.width = 'auto';
+      compassViewWidth = 0;
+      keepClockClearOfCompass();
+      updateCompass();
+      return;
+    }
+    const bottom = compassAtBottom();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const center = vw / 2;
+    let leftLimit = 20;
+    let rightLimit = vw - 20;
+    let inset = 18;
+    for (const rect of edgeObstacles()) {
+      inset = Math.max(inset, (bottom ? vh - rect.top : rect.bottom) + 12);
+      if ((rect.left + rect.right) / 2 < center) leftLimit = Math.max(leftLimit, rect.right + 18);
+      else rightLimit = Math.min(rightLimit, rect.left - 18);
+    }
+    const half = Math.min(280, center - leftLimit, rightLimit - center);
+    if (half < 110) {
+      anchorCompass(inset);
+      compassWidget.style.width = Math.max(220, Math.min(560, vw - 40)) + 'px';
+    } else {
+      compassWidget.style.width = (half * 2) + 'px';
+    }
+    compassViewWidth = P.compass ? compassWindow.clientWidth : 0;
+    keepClockClearOfCompass();
+    updateCompass();
+  }
+  function keepClockClearOfCompass() {
+    if (clockWidget.hidden || compassWidget.hidden) return;
+    const bottom = compassAtBottom();
+    if (bottom ? !P.clockPosition.startsWith('bottom') : !P.clockPosition.startsWith('top')) return;
+    const gap = 18;
+    const clock = clockWidget.getBoundingClientRect();
+    const compass = compassWidget.getBoundingClientRect();
+    const overlaps = clock.left < compass.right + gap && clock.right > compass.left - gap
+      && clock.top < compass.bottom + gap && clock.bottom > compass.top - gap;
+    if (!overlaps) return;
+    if (bottom) clockWidget.style.bottom = Math.ceil(window.innerHeight - compass.top + gap) + 'px';
+    else clockWidget.style.top = Math.ceil(compass.bottom + gap) + 'px';
+  }
+  function updateCompass() {
+    if (compassWidget.hidden) return;
+    if (P.compassTilt) {
+      const text = formatTilt(cam.pitch / D2R);
+      if (compassTilt.textContent !== text) compassTilt.textContent = text;
+    }
+    if (!P.compass) return;
+    const heading = lookHeadingDegrees();
+    const rounded = Math.round(heading) % 360;
+    const text = String(rounded).padStart(3, '0') + '°';
+    if (compassHeading.textContent !== text) compassHeading.textContent = text;
+    const width = compassViewWidth || compassWindow.clientWidth;
+    compassTape.style.transform = `translate3d(${(width * 0.5 - (heading + 360) * COMPASS_PX).toFixed(2)}px,0,0)`;
   }
   function setDisclosure(item, open) {
     item.querySelector(':scope > button').setAttribute('aria-expanded', String(open));
@@ -1633,8 +1796,12 @@ async function main() {
   });
   function applyWeather(fetchNow = false) {
     weatherWidget.update(P, fetchNow);
+    layoutCompass();
   }
   applyWeather(true);
+  addEventListener('resize', layoutCompass);
+  const overlayLayout = new ResizeObserver(() => layoutCompass());
+  for (const id of ['clock-widget', 'toolbar', 'hud', 'weather-widget']) overlayLayout.observe(document.getElementById(id));
   let geoRequest = 0;
   function applyCloudMode() {
     const dynamic = P.cloudMode === 'dynamic';
@@ -2042,7 +2209,7 @@ async function main() {
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
       if (key === 'showInfo' || key === 'showButtons') applyShowInfo();
-      if (key.startsWith('clock')) applyClock();
+      if (key.startsWith('clock') || key === 'compass' || key === 'compassTilt') applyClock();
       if (key.startsWith('weather')) applyWeather();
       if (key === 'moon' || key === 'stars' || key === 'cloudMotion') envFull = 2;
       keepManualSetting(key);
@@ -2054,7 +2221,7 @@ async function main() {
       if (value === undefined) return false;
       P[key] = value;
       if (control) control.input.value = value;
-      if (key.startsWith('clock')) applyClock();
+      if (key.startsWith('clock') || key === 'compassPosition') applyClock();
       if (key.startsWith('weather')) applyWeather(key === 'weatherZip' || key === 'weatherUnit');
       if (key === 'zipCode' || key === 'weatherZip') refreshPlaceLabel(key);
       if (key === 'skyMode') applySkyMode(true);
@@ -2269,6 +2436,7 @@ async function main() {
     if (fixedDt) dt = fixedDt;
     advanceCloudMotion(dt);
     updateCamera(dt);
+    updateCompass();
     simTime += dt;
     if (simTime > LOOP) simTime -= LOOP;
     frameIndex++;
