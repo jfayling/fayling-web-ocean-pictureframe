@@ -95,7 +95,9 @@ export const P = {
   clockBackground: 0.18,
   compass: true,
   compassPosition: 'top',
+  compassHeading: 180,
   compassTilt: true,
+  tiltAngle: 16,
   weather: true,
   weatherZip: '30265',
   weatherRefresh: 15,
@@ -548,6 +550,10 @@ async function main() {
   const camLocked = qs.has('cam') || qs.has('fov');
   const cam = { ...CAM_DEFAULT };
   let framedSky = false;
+  let headingExplicit = false;
+  let tiltExplicit = false;
+  let aimDirty = false;
+  let aimControlsReady = false;
   function frameSkyView() {
     if (camLocked) return;
     cam.yaw = 0;
@@ -565,6 +571,14 @@ async function main() {
     cam.x = CAM_DEFAULT.x; cam.y = CAM_DEFAULT.y; cam.z = CAM_DEFAULT.z;
     if (skyUsesPlace()) frameSkyView();
     else restoreDefaultView();
+    headingExplicit = false;
+    tiltExplicit = false;
+    aimDirty = false;
+    P.compassHeading = DEFAULTS.compassHeading;
+    P.tiltAngle = DEFAULTS.tiltAngle;
+    if (!aimControlsReady) return;
+    publishCompassAimFromCamera();
+    rememberSettings();
   }
   if (qs.get('cam')) {
     const v = qs.get('cam').split(',').map(Number);
@@ -581,7 +595,32 @@ async function main() {
     if (e.code === 'F1') { e.preventDefault(); showPanel(); }
     if (e.code === 'KeyH') togglePanel();
     if (e.code === 'KeyM') oceanAudio.toggle();
+    if (e.ctrlKey || e.metaKey || e.altKey || shortcutField(e.target)) return;
+    if (e.code === 'KeyT') toggleShown('clock');
+    if (e.code === 'KeyF') toggleShown('weather');
+    if (e.code === 'KeyN') toggleCompassOverlay();
   });
+  function shortcutField(target) {
+    return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"]');
+  }
+  function toggleShown(key) {
+    if (!aimControlsReady) return;
+    commitSetting(key, !P[key]);
+  }
+  let compassShown = null;
+  function toggleCompassOverlay() {
+    if (!aimControlsReady) return;
+    if (P.compass || P.compassTilt) {
+      compassShown = { compass: P.compass, tilt: P.compassTilt };
+      if (P.compass) commitSetting('compass', false);
+      if (P.compassTilt) commitSetting('compassTilt', false);
+      return;
+    }
+    const restore = compassShown || { compass: true, tilt: true };
+    compassShown = null;
+    commitSetting('compass', restore.compass);
+    commitSetting('compassTilt', restore.tilt);
+  }
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   // Hold the left button to look; pressing left + right together resets the view. The chord
   // stays latched until both buttons are up so releasing one of them doesn't resume looking.
@@ -594,6 +633,7 @@ async function main() {
     for (const k in keys) keys[k] = false;
     setLooking(false);
     chord = false;
+    saveLookAim();
   });
   canvas.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -606,15 +646,19 @@ async function main() {
     }
   });
   addEventListener('mouseup', (e) => {
-    if (!(e.buttons & 1)) setLooking(false);
+    if (!(e.buttons & 1)) {
+      setLooking(false);
+      saveLookAim();
+    }
     if (!(e.buttons & 3)) chord = false;
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   addEventListener('mousemove', (e) => {
     if (!looking) return;
-    if (!(e.buttons & 1)) { setLooking(false); return; }
+    if (!(e.buttons & 1)) { setLooking(false); saveLookAim(); return; }
     cam.yaw += e.movementX * 0.0022;
     cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - e.movementY * 0.0022));
+    noteLookAim();
   });
   addEventListener('wheel', (e) => {
     if (e.target instanceof Element && e.target.closest('#panel, .place-dialog')) return;
@@ -1091,7 +1135,9 @@ async function main() {
           ['top', 'Top'],
           ['bottom', 'Bottom'],
         ]],
-        ['compassTilt', 'Tilt angle', 'toggle', 'Show', 'Hide'],
+        ['compassHeading', 'Compass (°)', 0, 359, 1, 'aim'],
+        ['tiltAngle', 'Tilt (°)', -86, 86, 0.1, 'aim'],
+        ['compassTilt', 'Show tilt', 'toggle', 'Show', 'Hide'],
       ] },
     ] },
     { title: 'Weather', groups: [
@@ -1271,7 +1317,11 @@ async function main() {
     for (const key of Object.keys(P)) {
       if (!Object.hasOwn(data, key)) continue;
       const value = coerceSetting(key, data[key]);
-      if (value !== undefined) P[key] = value;
+      if (value !== undefined) {
+        P[key] = value;
+        if (key === 'compassHeading') headingExplicit = true;
+        if (key === 'tiltAngle') tiltExplicit = true;
+      }
     }
   }
   let shareUrlInput = null;
@@ -1336,14 +1386,22 @@ async function main() {
       for (const key of Object.keys(shared)) {
         if (!Object.hasOwn(P, key)) continue;
         const value = coerceSetting(key, shared[key]);
-        if (value !== undefined) P[key] = value;
+        if (value !== undefined) {
+          P[key] = value;
+          if (key === 'compassHeading') headingExplicit = true;
+          if (key === 'tiltAngle') tiltExplicit = true;
+        }
       }
     }
   }
   for (const key of Object.keys(P)) {
     if (!qs.has(key)) continue;
     const value = coerceSetting(key, qs.get(key));
-    if (value !== undefined) P[key] = value;
+    if (value !== undefined) {
+      P[key] = value;
+      if (key === 'compassHeading') headingExplicit = true;
+      if (key === 'tiltAngle') tiltExplicit = true;
+    }
   }
   if (qs.get('ui') === '0') P.showButtons = P.showInfo = false;
   const controls = new Map();
@@ -1425,11 +1483,74 @@ async function main() {
   // Placed skies use geographic north. North of the equator the default view looks south,
   // so yaw 0 is heading 180. South of the equator that view looks north. A static sky has
   // no place: azimuth 0, straight ahead, is north.
+  function compassHeadingOffset() {
+    if (!skyUsesPlace()) return 0;
+    if (skyLocation && skyLocation.latitude < 0) return 0;
+    return 180;
+  }
   function lookHeadingDegrees() {
-    const yawDeg = cam.yaw / D2R;
-    if (!skyUsesPlace()) return wrap360(yawDeg);
-    if (skyLocation && skyLocation.latitude < 0) return wrap360(yawDeg);
-    return wrap360(yawDeg + 180);
+    return wrap360(cam.yaw / D2R + compassHeadingOffset());
+  }
+  function yawForHeading(heading) {
+    return wrap360(heading - compassHeadingOffset()) * D2R;
+  }
+  function showAimControl(key, value) {
+    const control = controls.get(key);
+    if (!control) {
+      P[key] = value;
+      return;
+    }
+    control.input.value = String(value);
+    P[key] = Number(control.input.value);
+    control.output.textContent = control.input.value;
+  }
+  function showAimReadout(key, value) {
+    const control = controls.get(key);
+    if (!control) return;
+    const text = String(value);
+    if (control.input.value === text && control.output.textContent === text) return;
+    control.input.value = text;
+    control.output.textContent = text;
+  }
+  function publishCompassAimFromCamera() {
+    if (!aimControlsReady) return;
+    const heading = Math.round(lookHeadingDegrees()) % 360;
+    const tilt = Number(Math.max(-86, Math.min(86, cam.pitch / D2R)).toFixed(1));
+    if (headingExplicit && !camLocked) {
+      if (P.compassHeading !== heading) showAimControl('compassHeading', heading);
+    } else showAimReadout('compassHeading', heading);
+    if (tiltExplicit && !camLocked) {
+      if (P.tiltAngle !== tilt) showAimControl('tiltAngle', tilt);
+    } else showAimReadout('tiltAngle', tilt);
+  }
+  function applyCompassHeading() {
+    if (camLocked) return;
+    cam.yaw = yawForHeading(P.compassHeading);
+    updateCompass();
+  }
+  function applyTiltAngle() {
+    if (camLocked) return;
+    cam.pitch = Math.max(-1.5, Math.min(1.5, P.tiltAngle * D2R));
+    updateCompass();
+  }
+  function settleCompassAim() {
+    if (!camLocked) {
+      if (headingExplicit) applyCompassHeading();
+      if (tiltExplicit) applyTiltAngle();
+    }
+    publishCompassAimFromCamera();
+  }
+  function noteLookAim() {
+    if (!aimControlsReady) return;
+    headingExplicit = true;
+    tiltExplicit = true;
+    aimDirty = true;
+    publishCompassAimFromCamera();
+  }
+  function saveLookAim() {
+    if (!aimDirty || !aimControlsReady) return;
+    aimDirty = false;
+    rememberSettings();
   }
   function formatTilt(deg) {
     const rounded = Math.round(deg * 10) / 10;
@@ -1720,6 +1841,9 @@ async function main() {
       ['Esc', 'Close settings'],
       ['H', 'Show or hide settings'],
       ['M', 'Turn sound on or off'],
+      ['T', 'Show or hide the clock'],
+      ['F', 'Show or hide the weather'],
+      ['N', 'Show or hide the compass'],
       ['W A S D', 'Move'],
       ['Space or E', 'Move up'],
       ['Q or C', 'Move down'],
@@ -1738,6 +1862,7 @@ async function main() {
     parent.appendChild(wrap);
   }
   setDisclosure(sectionBodies[0].parentElement, true);
+  aimControlsReady = true;
   applyShowInfo();
   applyClock();
   applySkyMode();
@@ -1957,6 +2082,7 @@ async function main() {
       if (!framedSky) frameSkyView();
       if (resolveLocation) resolveZipCode();
     }
+    settleCompassAim();
   }
   async function resolveZipCode() {
     const query = P.zipCode;
@@ -1971,6 +2097,7 @@ async function main() {
       const location = await resolvePlace(query);
       if (request !== geoRequest || !skyUsesPlace() || P.zipCode !== query) return;
       skyLocation = location;
+      settleCompassAim();
       if (!refreshPlacedSky()) return;
       const when = P.skyMode === 'dated' ? ` at ${P.skyWhen.replace('T', ' ')}`
         : P.skyMode === 'lapse' ? ` from ${P.skyLapseStart.replace('T', ' ')}` : '';
@@ -2247,8 +2374,16 @@ async function main() {
     if (kind === 'lut') needLUT = true;
     if (kind === 'clock') applyClock();
     if (kind === 'weather') applyWeather();
+    if (kind === 'aim' && key === 'compassHeading') {
+      headingExplicit = true;
+      applyCompassHeading();
+    }
+    if (kind === 'aim' && key === 'tiltAngle') {
+      tiltExplicit = true;
+      applyTiltAngle();
+    }
     // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
-    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse') envFull = 2;
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -2307,6 +2442,10 @@ async function main() {
     moonManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
+    headingExplicit = true;
+    tiltExplicit = true;
+    applyCompassHeading();
+    applyTiltAngle();
     note('Reset to defaults');
   }
   exportBtn.addEventListener('click', exportSettings);
