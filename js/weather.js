@@ -46,6 +46,31 @@ function compass(degrees) {
   return points[Math.round((Number(degrees) || 0) / 45) % 8];
 }
 
+function rounded(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number) : null;
+}
+
+function tempBlock(config, current, unit, high, low) {
+  const currentHTML = config.weatherTemp
+    ? `<div class="weather-temp">${Math.round(current.temperature_2m)}${unit}</div>`
+    : '';
+  const rangeHTML = high == null || low == null ? '' : `<div class="weather-range" aria-label="Today high ${high} degrees, low ${low} degrees"><span>H ${high}°</span><span>L ${low}°</span></div>`;
+  return currentHTML || rangeHTML ? `<div class="weather-temp-block">${currentHTML}${rangeHTML}</div>` : '';
+}
+
+function todayTemperatures(daily, currentTime) {
+  const times = daily?.time || [];
+  if (!times.length) return null;
+  const today = String(currentTime || '').slice(0, 10);
+  const found = times.indexOf(today);
+  const index = found >= 0 ? found : 0;
+  return {
+    high: daily.temperature_2m_max?.[index],
+    low: daily.temperature_2m_min?.[index],
+  };
+}
+
 function escapeHTML(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -93,10 +118,12 @@ export function createWeatherWidget(root, status) {
       root.innerHTML = `<div class="weather-card weather-error">${escapeHTML(data.error)}</div>`;
       return;
     }
-    const { current, hourly, location, alerts } = data;
+    const { current, hourly, daily, location, alerts } = data;
     const [label, icon] = condition(current.weather_code);
     const unit = config.weatherUnit === 'celsius' ? '°C' : '°F';
     const speedUnit = config.weatherUnit === 'celsius' ? 'km/h' : 'mph';
+    const high = rounded(daily?.high);
+    const low = rounded(daily?.low);
     const details = [];
     if (config.weatherFeels) details.push(detail('temp', `Feels ${Math.round(current.apparent_temperature)}${unit}`));
     if (config.weatherPrecip) {
@@ -120,7 +147,9 @@ export function createWeatherWidget(root, status) {
     if (config.weatherForecast && hourly.times.length) {
       const hours = hourly.times.map((time, i) => {
         const text = new Intl.DateTimeFormat([], { hour: 'numeric' }).format(new Date(time));
-        return `<div class="weather-hour"><time>${text}</time><strong>${hourly.chances[i] ?? 0}% rain</strong></div>`;
+        const temperature = rounded(hourly.temperatures?.[i]);
+        const tempLine = temperature == null ? '' : `<strong>${temperature}°</strong>`;
+        return `<div class="weather-hour"><time>${text}</time>${tempLine}<span class="weather-hour-rain">${hourly.chances[i] ?? 0}% rain</span></div>`;
       }).join('');
       forecastHTML = `<div class="weather-forecast">${hours}</div>`;
     }
@@ -133,7 +162,7 @@ export function createWeatherWidget(root, status) {
     root.innerHTML = `${alertHTML}<div class="weather-card"><div class="weather-main">
       <div class="weather-icon">${weatherIcon(icon, current.is_day)}</div>
       <div><button type="button" class="weather-place" title="${escapeHTML(location.name || location.query)}" aria-label="Change weather location, ${escapeHTML(location.name || location.query)}">${escapeHTML(location.name || location.query)}</button><div class="weather-condition">${label}</div></div>
-      ${config.weatherTemp ? `<div class="weather-temp">${Math.round(current.temperature_2m)}${unit}</div>` : ''}
+      ${tempBlock(config, current, unit, high, low)}
       </div>${details.length ? `<div class="weather-details">${details.join('')}</div>` : ''}${forecastHTML}
       <time class="weather-updated" datetime="${updated.toISOString()}">Updated ${updatedText}</time></div>`;
     if (root.querySelector('.weather-alert-scroll')) requestAnimationFrame(() => playAlertScroll(root));
@@ -152,7 +181,8 @@ export function createWeatherWidget(root, status) {
         latitude: location.latitude,
         longitude: location.longitude,
         current: 'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,is_day',
-        hourly: 'precipitation_probability',
+        hourly: 'precipitation_probability,temperature_2m',
+        daily: 'temperature_2m_max,temperature_2m_min',
         temperature_unit: metric ? 'celsius' : 'fahrenheit',
         wind_speed_unit: metric ? 'kmh' : 'mph',
         precipitation_unit: metric ? 'mm' : 'inch',
@@ -175,13 +205,21 @@ export function createWeatherWidget(root, status) {
       if (weatherResult.status !== 'fulfilled') throw weatherResult.reason;
       const weather = weatherResult.value;
       const now = Date.now();
-      const future = (weather.hourly?.time || []).map((time, i) => ({ time, chance: weather.hourly.precipitation_probability?.[i] }))
-        .filter((item) => new Date(item.time).getTime() >= now - 1800000).slice(0, 3);
+      const future = (weather.hourly?.time || []).map((time, i) => ({
+        time,
+        chance: weather.hourly.precipitation_probability?.[i],
+        temperature: weather.hourly.temperature_2m?.[i],
+      })).filter((item) => new Date(item.time).getTime() >= now - 1800000).slice(0, 3);
       data = {
         current: weather.current,
         location,
         alerts: alertResult.status === 'fulfilled' ? alertResult.value.features || [] : [],
-        hourly: { times: future.map((item) => item.time), chances: future.map((item) => item.chance) },
+        hourly: {
+          times: future.map((item) => item.time),
+          chances: future.map((item) => item.chance),
+          temperatures: future.map((item) => item.temperature),
+        },
+        daily: todayTemperatures(weather.daily, weather.current?.time),
         updatedAt: now,
       };
       status(`${location.name || location.query} weather updated`);
