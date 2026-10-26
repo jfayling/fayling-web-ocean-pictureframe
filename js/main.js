@@ -1325,6 +1325,8 @@ async function main() {
     }
   }
   let shareUrlInput = null;
+  // ui=0 hides the buttons for that visit only. Keep those overrides out of saved settings.
+  const visitOnly = new Set();
   function storedSettingValue(key) {
     if (sunManual && SUN_DRIVEN.includes(key)) return sunManual[key];
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
@@ -1335,6 +1337,7 @@ async function main() {
   function settingsSnapshot() {
     const changed = {};
     for (const key of Object.keys(P)) {
+      if (visitOnly.has(key)) continue;
       const stored = storedSettingValue(key);
       if (stored !== DEFAULTS[key]) changed[key] = stored;
     }
@@ -1403,7 +1406,11 @@ async function main() {
       if (key === 'tiltAngle') tiltExplicit = true;
     }
   }
-  if (qs.get('ui') === '0') P.showButtons = P.showInfo = false;
+  if (qs.get('ui') === '0') {
+    visitOnly.add('showButtons');
+    visitOnly.add('showInfo');
+    P.showButtons = P.showInfo = false;
+  }
   const controls = new Map();
   const skyReadout = document.getElementById('sky-readout');
   function updateSkyReadout() {
@@ -2326,6 +2333,7 @@ async function main() {
   });
   function commitSetting(key, value) {
     if (!Object.hasOwn(P, key)) return false;
+    visitOnly.delete(key);
     const control = controls.get(key);
     if (BOOL_KEYS.has(key)) {
       if (typeof value !== 'boolean') return false;
