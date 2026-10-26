@@ -806,6 +806,7 @@ async function main() {
     skyInstant = when;
     envFull = 2;
     updateSkyReadout();
+    updateDrivenSun();
     updateDrivenMoon();
     return true;
   }
@@ -999,6 +1000,7 @@ async function main() {
     'moon', 'stars', 'cloudMotion']);
   const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
     'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode']);
+  const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
     'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
     'cloudScale', 'cloudAltitude', 'clouds', 'cloudDensity',
@@ -1007,6 +1009,7 @@ async function main() {
   ];
   const STAR_DRIVEN = ['starDensity', 'starBrightness', 'starTwinkle', 'starSeed', 'nightBrightness'];
   const MOON_DRIVEN = ['moon', 'moonElev', 'moonAzim', 'moonPhase', 'moonSize', 'moonBrightness'];
+  let sunManual = null;
   let cloudManual = null;
   let starManual = null;
   let moonManual = null;
@@ -1259,6 +1262,7 @@ async function main() {
   }
   let shareUrlInput = null;
   function storedSettingValue(key) {
+    if (sunManual && SUN_DRIVEN.includes(key)) return sunManual[key];
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
     if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
     if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
@@ -1642,7 +1646,7 @@ async function main() {
       for (const key of CLOUD_DRIVEN) showDrivenSetting(key, cloudManual[key]);
       cloudManual = null;
     }
-    for (const key of CLOUD_DRIVEN) setSettingVisible(key, !dynamic);
+    for (const key of CLOUD_DRIVEN) setSettingLocked(key, dynamic);
     refreshModeGroups();
     if (dynamic) updateDynamicClouds(0);
   }
@@ -1655,8 +1659,11 @@ async function main() {
     } else {
       setSettingVisible('starMode', true);
       setSettingVisible('stars', true);
-      for (const key of STAR_DRIVEN) setSettingVisible(key, manual);
-      setSettingVisible('starSeed', manual && !skyUsesPlace());
+      for (const key of STAR_DRIVEN) {
+        // A placed sky uses the real catalogue orientation, so a static seed has nothing to set.
+        if (key === 'starSeed' && manual && skyUsesPlace()) setSettingVisible(key, false);
+        else setSettingLocked(key, !manual);
+      }
     }
     refreshModeGroups();
   }
@@ -1694,6 +1701,12 @@ async function main() {
   }
   // Placed sky modes own the moon. Position and phase follow the place and time,
   // and the disc stays at the picture-frame size and brightness.
+  function updateDrivenSun() {
+    if (!skyUsesPlace() || !liveSky) return;
+    const latitude = skyLocation ? skyLocation.latitude : 0;
+    showDrivenSetting('sunElev', liveSky.sunAltitude);
+    showDrivenSetting('sunAzim', wrapSigned(liveSky.sunAzimuth + (latitude >= 0 ? 180 : 0)));
+  }
   function updateDrivenMoon() {
     if (!skyUsesPlace() || !liveSky) return;
     const latitude = skyLocation ? skyLocation.latitude : 0;
@@ -1710,6 +1723,25 @@ async function main() {
     control.row.hidden = false;
     control.input.disabled = locked;
     control.row.classList.toggle('disabled', locked);
+  }
+  function applySunControls() {
+    const placed = skyUsesPlace();
+    if (placed && !sunManual) {
+      sunManual = {};
+      for (const key of SUN_DRIVEN) sunManual[key] = P[key];
+    }
+    if (!placed && sunManual) {
+      for (const key of SUN_DRIVEN) showDrivenSetting(key, sunManual[key]);
+      sunManual = null;
+    }
+    const night = P.skyMode === 'night';
+    if (night) {
+      for (const key of SUN_DRIVEN) setSettingVisible(key, false);
+    } else {
+      for (const key of SUN_DRIVEN) setSettingLocked(key, placed);
+      if (placed) updateDrivenSun();
+    }
+    refreshModeGroups();
   }
   function applyMoonControls() {
     const placed = skyUsesPlace();
@@ -1736,7 +1768,7 @@ async function main() {
     const placed = skyUsesPlace();
     const dated = P.skyMode === 'dated';
     const lapse = P.skyMode === 'lapse';
-    for (const key of ['sunElev', 'sunAzim']) setSettingVisible(key, !placed && P.skyMode !== 'night');
+    applySunControls();
     applyMoonControls();
     setSettingVisible('zipCode', placed);
     setSettingVisible('skyWhen', dated);
@@ -2055,10 +2087,14 @@ async function main() {
     return true;
   }
   function keepManualSetting(key) {
+    if (sunManual && SUN_DRIVEN.includes(key)) sunManual[key] = P[key];
     if (cloudManual && CLOUD_DRIVEN.includes(key)) cloudManual[key] = P[key];
     if (starManual && STAR_DRIVEN.includes(key)) starManual[key] = P[key];
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
+    if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
     if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
+    if (P.cloudMode === 'dynamic' && CLOUD_DRIVEN.includes(key)) updateDynamicClouds();
+    if (P.starMode === 'dynamic' && STAR_DRIVEN.includes(key)) updateDynamicStars();
   }
   function booleanSetting(raw) {
     if (typeof raw === 'boolean') return raw;
@@ -2098,6 +2134,7 @@ async function main() {
     note(count ? `Imported ${count} setting${count === 1 ? '' : 's'}` : 'No recognized settings');
   }
   function resetAll() {
+    sunManual = null;
     cloudManual = null;
     starManual = null;
     moonManual = null;
