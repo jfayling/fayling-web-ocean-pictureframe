@@ -94,6 +94,8 @@ The clock shows the actual current time. In Date and time and Time lapse modes i
 
 ### Compass
 
+![Compass display settings](docs/settings-compass.png)
+
 The compass is on by default and sits along the top edge. It can move to the bottom. **Compass (°)** aims the view, and **Tilt (°)** sets the pitch. **Show tilt** puts that pitch on the compass. Dragging the view updates both. **N** shows or hides it. On a placed sky, north is geographic: north of the equator the default view looks south, so straight ahead reads 180. A static sky treats straight ahead as north.
 
 ### Weather
@@ -142,6 +144,8 @@ Clouds are two independently moving layers, a broken low cumulus and a fibrous h
 In Dynamic / real-world mode every cloud control follows a deterministic, location-dependent weather pattern. Synoptic systems evolve over several simulated days, with persistent nighttime cloud cover, daytime convective growth, changing cloud bases and density, plausible low/high-level wind shear, and faster high-level winds. Date and time reproduces the same conditions for the same place and instant, while Time lapse advances the weather with the simulated sky. This is a weather model rather than a live observation feed. The manual cloud controls stay visible but cannot be edited while Dynamic is selected, and the previous manual values return when Static is selected again. Cloud motion is accumulated a little at a time, so a change in wind or the periodic wave reset does not jump the whole layer.
 
 ### Rain
+
+![Rain weather, surface, and storm settings](docs/settings-rain.png)
 
 Rain is the last group inside Sky. It is off until you turn it on. Weather sets the switch, the intensity, the style, and **Follow weather card**. Surface sets ripples and splashes. Storm sets lightning. Intensity runs from a few drops through drizzle, light, moderate, heavy, and violent rain. The streaks slant with the ocean wind. Near the camera, drops are long falling streaks that hit the water and leave a dent, a ring, and a short splash. Farther out they thin into a mist toward the horizon, and the surface roughens so the glitter path widens.
 
