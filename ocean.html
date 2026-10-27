@@ -39,6 +39,8 @@
   #panel .section-toggle { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid #e5e1d822;
                            font: 650 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
   #panel .section:first-child .section-toggle { margin-top: 0; padding-top: 0; border-top: 0; }
+  #panel .group.disabled > .group-toggle,
+  #panel .group.disabled > .group-toggle:hover { opacity: .38; color: inherit; cursor: default; }
   #panel .group-toggle, #panel .subgroup-toggle { margin: 7px 0 0; font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: .04em;
                          text-transform: uppercase; opacity: .72; }
   #panel .subgroup-toggle { font-size: 10.5px; opacity: .64; }
@@ -52,7 +54,7 @@
   #panel .section-body { padding: 4px 0 2px; }
   #panel .group-body { margin-left: 14px; }
   #panel .subgroup-body { margin-left: 12px; }
-  #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
+  #panel label { display: grid; grid-template-columns: 1fr 110px 72px; gap: 6px; align-items: center; margin: 3px 0; }
   #panel label[hidden], #panel .group[hidden], #panel .subgroup[hidden] { display: none; }
   #panel input[type="range"] { width: 110px; accent-color: #e2a04e; }
   #panel select { width: 156px; padding: 3px 5px; border: 1px solid #e5e1d833; border-radius: 5px;
@@ -1593,8 +1595,436 @@ fn main(@builtin(local_invocation_index) k: u32) {
 }
 `;
 
+// ---- js/wgsl/rain.js ----
+// Rain drops, a camera-following ripple field, mist, and lightning.
+// The frame uniform is full, so rain keeps its own block. Layout matches rainF in main.js.
+
+const RAIN_RES = 512;
+const RAIN_MAP = 40;
+const MAX_DROPS = 12288;
+
+const RAIN_STRUCT = /* wgsl */ `
+struct RainU {
+  cam: vec4f,     // xyz metres, w = time (s)
+  wind: vec4f,    // xy direction, z speed (m/s), w intensity
+  amt: vec4f,     // ripples, splashes, lightning flash, style (0 rain, 1 storm, 2 hurricane)
+  bolt: vec4f,    // xy direction, z seed, w enabled
+  sim: vec4f,     // map size (m), dt, active drops, slant
+  origin: vec4f,  // xy current centre, zw previous centre
+  atmo: vec4f,    // extra fog, sun scale, sky darken, gust
+  dropP: vec4f,   // fall speed, box radius, box height, splash chance
+};
+`;
+
+const RES = RAIN_RES;
+
+const RAIN_DROP_INIT = RAIN_STRUCT + /* wgsl */ `
+struct Drop { pos: vec4f, vel: vec4f }  // vel.w >= 1 falling; 0..1 splash life
+@group(0) @binding(0) var<uniform> Rain: RainU;
+@group(0) @binding(1) var<storage, read_write> drops: array<Drop>;
+
+fn h01(n: u32) -> f32 {
+  var x = n * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  x = (x >> 22u) ^ x;
+  return f32(x) / 4294967295.0;
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= ${MAX_DROPS}u) { return; }
+  let a = h01(id.x * 17u + 3u);
+  let b = h01(id.x * 29u + 11u);
+  let c = h01(id.x * 47u + 19u);
+  let ang = a * 6.2831853;
+  let rad = sqrt(b) * Rain.dropP.y;
+  let pos = vec3f(Rain.cam.x + cos(ang) * rad, Rain.cam.y + 1.0 + c * Rain.dropP.z, Rain.cam.z + sin(ang) * rad);
+  let gust = 0.85 + 0.15 * a;
+  let horiz = Rain.wind.xy * Rain.wind.z * Rain.sim.w * gust;
+  drops[id.x].pos = vec4f(pos, a);
+  drops[id.x].vel = vec4f(horiz.x, -Rain.dropP.x, horiz.y, 2.0);
+}
+`;
+
+const RAIN_DROP_UPDATE = RAIN_STRUCT + FRAME_WGSL + /* wgsl */ `
+struct Drop { pos: vec4f, vel: vec4f }
+@group(0) @binding(0) var<uniform> Rain: RainU;
+@group(0) @binding(1) var<uniform> F: Frame;
+@group(0) @binding(2) var<storage, read_write> drops: array<Drop>;
+@group(0) @binding(3) var<storage, read_write> dent: array<atomic<i32>>;
+@group(0) @binding(4) var<storage, read_write> splash: array<atomic<i32>>;
+@group(0) @binding(5) var dispTex: texture_2d_array<f32>;
+@group(0) @binding(6) var samp: sampler;
+
+fn h01(n: f32) -> f32 {
+  return fract(sin(n * 127.1 + 311.7) * 43758.5453);
+}
+
+fn waterY(xz: vec2f) -> f32 {
+  var y = 0.0;
+  for (var c = 0u; c < ${CASCADES}u; c++) {
+    let inv = F.cascInvL[c >> 2u][c & 3u];
+    y += textureSampleLevel(dispTex, samp, xz * inv, c, 0.0).y;
+  }
+  return y;
+}
+
+fn stamp(xz: vec2f, energy: f32) {
+  let texel = Rain.sim.x / ${RES}.0;
+  let local = (xz - Rain.origin.xy) / texel + vec2f(${RES / 2}.0);
+  let base = vec2i(local);
+  for (var j = -1; j <= 1; j++) {
+    for (var i = -1; i <= 1; i++) {
+      let p = base + vec2i(i, j);
+      if (any(p < vec2i(0)) || any(p >= vec2i(${RES}))) { continue; }
+      let idx = u32(p.y) * ${RES}u + u32(p.x);
+      let centre = i == 0 && j == 0;
+      let dentV = i32(energy * select(2800.0, -16000.0, centre));
+      atomicAdd(&dent[idx], dentV);
+      if (centre) { atomicAdd(&splash[idx], i32(energy * 26000.0)); }
+    }
+  }
+}
+
+fn respawn(id: u32, seed: f32) -> vec4f {
+  let n = h01(f32(id) * 0.17 + Rain.cam.w * 1.7 + seed * 9.1);
+  let m = h01(f32(id) * 0.93 + seed * 4.2 + 2.3);
+  let k = h01(f32(id) * 1.7 + Rain.cam.w * 0.37 + 5.5);
+  let ang = n * 6.2831853;
+  let rad = sqrt(m) * Rain.dropP.y;
+  let xz = Rain.cam.xz + vec2f(cos(ang), sin(ang)) * rad;
+  let y = waterY(xz) + 2.0 + k * Rain.dropP.z;
+  return vec4f(xz.x, y, xz.y, seed);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let live = u32(Rain.sim.z);
+  if (id.x >= live) { return; }
+  var d = drops[id.x];
+  let dt = min(Rain.sim.y, 0.05);
+  let gust = 0.78 + 0.22 * sin(Rain.cam.w * (0.7 + Rain.atmo.w) + d.pos.w * 6.2831853);
+  let horiz = Rain.wind.xy * Rain.wind.z * Rain.sim.w * gust;
+  if (d.vel.w >= 1.0) {
+    d.vel = vec4f(horiz.x, -Rain.dropP.x * (0.82 + 0.36 * d.pos.w), horiz.y, 2.0);
+  } else {
+    d.vel.y -= 9.8 * dt;
+    d.vel.x = mix(d.vel.x, horiz.x, 0.15);
+    d.vel.z = mix(d.vel.z, horiz.y, 0.15);
+    d.vel.w -= dt;
+  }
+  d.pos = vec4f(d.pos.xyz + d.vel.xyz * dt, d.pos.w);
+  let away = length(d.pos.xz - Rain.cam.xz);
+  let wy = waterY(d.pos.xz);
+  let hit = d.pos.y <= wy + 0.02;
+  let left = away > Rain.dropP.y * 1.35 || d.pos.y > wy + Rain.dropP.z + 8.0;
+  if (d.vel.w < 1.0 && (d.vel.w <= 0.0 || hit || left)) {
+    d.pos = respawn(id.x, d.pos.w);
+    d.vel = vec4f(horiz.x, -Rain.dropP.x, horiz.y, 2.0);
+  } else if (d.vel.w >= 1.0 && left) {
+    d.pos = respawn(id.x, d.pos.w);
+    d.vel = vec4f(horiz.x, -Rain.dropP.x, horiz.y, 2.0);
+  } else if (d.vel.w >= 1.0 && hit) {
+    let energy = (0.55 + d.pos.w) * (0.45 + Rain.wind.w);
+    stamp(vec2f(d.pos.x, d.pos.z), energy);
+    let roll = h01(f32(id.x) + Rain.cam.w * 13.1 + d.pos.w * 8.0);
+    if (roll < Rain.dropP.w) {
+      d.pos.y = wy + 0.06 + roll * 0.08;
+      d.vel = vec4f(horiz.x * 0.25, Rain.dropP.x * (0.18 + roll * 0.22), horiz.y * 0.25, 0.28 + roll * 0.2);
+    } else {
+      d.pos = respawn(id.x, d.pos.w);
+      d.vel = vec4f(horiz.x, -Rain.dropP.x, horiz.y, 2.0);
+    }
+  }
+  drops[id.x] = d;
+}
+`;
+
+const RAIN_RIPPLE = RAIN_STRUCT + /* wgsl */ `
+@group(0) @binding(0) var<uniform> Rain: RainU;
+@group(0) @binding(1) var prevTex: texture_2d<f32>;
+@group(0) @binding(2) var dst: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var<storage, read_write> dent: array<atomic<i32>>;
+@group(0) @binding(4) var<storage, read_write> splash: array<atomic<i32>>;
+
+fn prevAt(p: vec2i) -> vec4f {
+  if (any(p < vec2i(0)) || any(p >= vec2i(${RES}))) { return vec4f(0.0); }
+  return textureLoad(prevTex, p, 0);
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= ${RES}u || id.y >= ${RES}u) { return; }
+  let texel = Rain.sim.x / ${RES}.0;
+  let shift = vec2i(
+    i32(round((Rain.origin.x - Rain.origin.z) / texel)),
+    i32(round((Rain.origin.y - Rain.origin.w) / texel)));
+  let base = vec2i(id.xy) + shift;
+  let c = prevAt(base);
+  let lp = prevAt(base + vec2i(-1, 0)).r;
+  let rp = prevAt(base + vec2i(1, 0)).r;
+  let up = prevAt(base + vec2i(0, -1)).r;
+  let dp = prevAt(base + vec2i(0, 1)).r;
+  let dt = min(max(Rain.sim.y, 0.0), 0.05);
+  let damp = exp(-dt * select(1.35, 3.8, Rain.wind.w < 0.01));
+  let lap = lp + rp + up + dp - 4.0 * c.r;
+  var vel = (c.g + lap * 0.2) * damp;
+  var h = c.r + vel;
+  let idx = id.y * ${RES}u + id.x;
+  h += f32(atomicLoad(&dent[idx])) * 0.00000115 * Rain.amt.x;
+  h = clamp(h, -0.04, 0.04);
+  vel = clamp(h - c.r, -0.25, 0.25);
+  let fade = exp(-dt * (2.4 + Rain.wind.z * 0.04));
+  let sp = c.b * fade + f32(atomicLoad(&splash[idx])) * 0.000028 * Rain.amt.y;
+  textureStore(dst, id.xy, vec4f(h, vel, clamp(sp, 0.0, 2.5), 1.0));
+}
+`;
+
+const RAIN_CLEAR = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> dent: array<atomic<i32>>;
+@group(0) @binding(1) var<storage, read_write> splash: array<atomic<i32>>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= ${RES}u * ${RES}u) { return; }
+  atomicStore(&dent[id.x], 0);
+  atomicStore(&splash[id.x], 0);
+}
+`;
+
+const RAIN_VS = /* wgsl */ `
+struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
+  var o: VO;
+  o.pos = vec4f(p, 0.0, 1.0);
+  o.ndc = p;
+  return o;
+}
+`;
+
+const RAIN_DRAW = RAIN_STRUCT + FRAME_WGSL + /* wgsl */ `
+struct Drop { pos: vec4f, vel: vec4f }
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) across: f32,
+  @location(1) along: f32,
+  @location(2) splash: f32,
+  @location(3) fade: f32,
+}
+@group(0) @binding(0) var<uniform> F: Frame;
+@group(0) @binding(1) var<uniform> Rain: RainU;
+@group(0) @binding(2) var<storage, read> drops: array<Drop>;
+
+fn corner(i: u32) -> vec2f {
+  switch i {
+    case 0u: { return vec2f(-1.0, -1.0); }
+    case 1u: { return vec2f(1.0, -1.0); }
+    case 2u: { return vec2f(1.0, 1.0); }
+    case 3u: { return vec2f(-1.0, -1.0); }
+    case 4u: { return vec2f(1.0, 1.0); }
+    default: { return vec2f(-1.0, 1.0); }
+  }
+}
+
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  let drop = vi / 6u;
+  let q = corner(vi % 6u);
+  let d = drops[drop];
+  var dir = d.vel.xyz;
+  let speed = length(dir);
+  dir = select(vec3f(0.0, -1.0, 0.0), dir / max(speed, 0.001), speed > 0.05);
+  let toCam = F.camPos.xyz - d.pos.xyz;
+  let dist = max(length(toCam), 0.15);
+  var side = cross(dir, toCam / dist);
+  let sl = length(side);
+  side = select(normalize(cross(dir, vec3f(0.0, 0.0, 1.0))), side / max(sl, 1e-4), sl > 1e-3);
+  let pixel = dist * 2.0 * length(F.camUp.xyz) * max(F.screen.w, 1e-6);
+  let near = 1.0 - smoothstep(3.0, 8.0, dist);
+  var len = (0.28 + speed * 0.03) * mix(0.3, 1.0, near);
+  var width = (0.008 + d.pos.w * 0.008) * mix(0.4, 1.0, near);
+  len = max(len, pixel * mix(1.5, 16.0, near));
+  width = max(width, pixel * mix(0.45, 1.05, near));
+  let splashing = d.vel.w < 1.0;
+  if (splashing) { len *= 0.32; width *= 1.7; }
+  let world = d.pos.xyz + dir * q.y * len + side * q.x * width;
+  var o: VO;
+  o.pos = F.viewProj * vec4f(world - F.camPos.xyz, 1.0);
+  o.across = q.x;
+  o.along = q.y;
+  o.splash = select(0.0, 1.0, splashing);
+  let box = length(d.pos.xz - Rain.cam.xz) / max(Rain.dropP.y, 1.0);
+  o.fade = smoothstep(1.25, 0.55, box) * smoothstep(0.2, 1.1, dist) * near * Rain.wind.w;
+  return o;
+}
+
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let body = smoothstep(1.0, 0.12, abs(in.across));
+  let rim = smoothstep(0.25, 0.95, abs(in.across));
+  let head = smoothstep(-1.0, -0.25, in.along) * smoothstep(1.0, 0.15, in.along);
+  let a = body * head * in.fade * mix(0.5, 0.75, in.splash);
+  let rgb = (vec3f(0.58, 0.66, 0.74) + vec3f(0.4, 0.38, 0.32) * rim + vec3f(0.25, 0.22, 0.16) * in.splash) * a;
+  return vec4f(rgb, a);
+}
+`;
+
+const RAIN_MIST = RAIN_STRUCT + FRAME_WGSL + RAIN_VS + /* wgsl */ `
+@group(0) @binding(0) var<uniform> F: Frame;
+@group(0) @binding(1) var<uniform> Rain: RainU;
+
+fn hash21(p: vec2f) -> f32 {
+  let q = fract(p * vec2f(123.34, 345.45));
+  let r = q + dot(q, q.yx + 34.345);
+  return fract(r.x * r.y);
+}
+
+fn noise(p: vec2f) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash21(i), hash21(i + vec2f(1.0, 0.0)), u.x),
+    mix(hash21(i + vec2f(0.0, 1.0)), hash21(i + vec2f(1.0, 1.0)), u.x),
+    u.y);
+}
+
+fn streaks(uv: vec2f, cols: f32, rows: f32, speed: f32, sx: f32, keep: f32, phase: f32) -> f32 {
+  let dir = normalize(vec2f(sx * Rain.sim.w, -1.0));
+  let tangent = vec2f(dir.y, -dir.x);
+  var p = vec2f(dot(uv, tangent) * cols, dot(uv, dir) * rows - phase);
+  p.y -= Rain.cam.w * speed;
+  let id = floor(p);
+  let f = fract(p);
+  let n = hash21(id);
+  let m = hash21(id.yx + vec2f(4.2, 8.7));
+  let alive = smoothstep(keep, keep + 0.1, n);
+  let halfW = 0.008 + m * 0.02;
+  let line = smoothstep(halfW, 0.0, abs(f.x - mix(0.18, 0.82, m)));
+  let len = 0.8 + m * 0.18;
+  let y0 = (1.0 - len) * fract(n * 7.13);
+  let along = smoothstep(y0, y0 + 0.1, f.y) * (1.0 - smoothstep(y0 + len - 0.18, y0 + len, f.y));
+  return line * along * alive * (0.35 + m * 0.65);
+}
+
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let intensity = Rain.wind.w;
+  if (intensity < 0.004) { return vec4f(0.0); }
+  let ray = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
+  let up = ray.y;
+  let streakMask = smoothstep(-0.16, 0.05, up);
+  let veilMask = exp(-up * up * 10.0);
+  let right = normalize(F.camRight.xyz);
+  let wind = vec3f(Rain.wind.x, 0.0, Rain.wind.y);
+  let sx = dot(wind, right);
+  let uv = in.ndc * vec2f(F.screen.x * F.screen.w, 1.0);
+  let keep = mix(0.7, 0.42, intensity);
+  let a = streaks(uv, 110.0, 14.0, 0.7 + intensity, sx, keep, 0.0);
+  let b = streaks(uv + vec2f(2.7, 1.1), 190.0, 22.0, 1.15 + intensity * 1.3, sx * 0.85, keep + 0.05, 11.0);
+  let threads = (a * 0.55 + b * 0.45) * streakMask;
+  let dir = normalize(vec2f(sx * Rain.sim.w, -1.0));
+  let along = dot(uv, dir);
+  let across = dot(uv, vec2f(dir.y, -dir.x));
+  let drift = vec2f(across * 3.5, along * 1.4 - Rain.cam.w * (0.35 + intensity * 0.4));
+  let haze = noise(drift) * 0.65 + noise(drift * 2.3 + 5.0) * 0.35;
+  let veil = veilMask * (0.35 + 0.65 * haze);
+  let alpha = clamp((threads * 0.34 + veil * 0.22) * intensity, 0.0, 0.36);
+  let rgb = vec3f(0.62, 0.7, 0.78) * alpha;
+  return vec4f(rgb, alpha);
+}
+`;
+
+// Sampled by the ocean shader. Bindings follow the existing ocean group.
+const RAIN_OCEAN = RAIN_STRUCT + /* wgsl */ `
+@group(0) @binding(12) var<uniform> Rain: RainU;
+@group(0) @binding(13) var rippleTex: texture_2d<f32>;
+@group(0) @binding(14) var rippleSamp: sampler;
+
+fn rainUv(xz: vec2f) -> vec2f {
+  return (xz - Rain.origin.xy) / max(Rain.sim.x, 1.0) + 0.5;
+}
+
+fn rainEdge(uv: vec2f) -> f32 {
+  return smoothstep(0.0, 0.14, uv.x) * smoothstep(1.0, 0.86, uv.x)
+    * smoothstep(0.0, 0.14, uv.y) * smoothstep(1.0, 0.86, uv.y);
+}
+
+fn rainHeight(xz: vec2f) -> f32 {
+  if (Rain.wind.w <= 0.001 || Rain.amt.x <= 0.0) { return 0.0; }
+  let uv = rainUv(xz);
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) { return 0.0; }
+  return textureSampleLevel(rippleTex, rippleSamp, uv, 0.0).r * rainEdge(uv) * Rain.amt.x;
+}
+
+// xy slope (dh/dx, dh/dz), z splash, w near-field mask
+fn rainField(xz: vec2f) -> vec4f {
+  let intensity = Rain.wind.w;
+  if (intensity <= 0.001) { return vec4f(0.0); }
+  let uv = rainUv(xz);
+  var slope = vec2f(0.0);
+  var splash = 0.0;
+  var mask = 0.0;
+  if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
+    let edge = rainEdge(uv);
+    let texel = 1.0 / ${RES}.0;
+    let c = textureSampleLevel(rippleTex, rippleSamp, uv, 0.0);
+    let hx = textureSampleLevel(rippleTex, rippleSamp, uv + vec2f(texel, 0.0), 0.0).r;
+    let hz = textureSampleLevel(rippleTex, rippleSamp, uv + vec2f(0.0, texel), 0.0).r;
+    let worldTexel = Rain.sim.x / ${RES}.0;
+    slope = vec2f(hx - c.r, hz - c.r) / max(worldTexel, 1e-4) * edge * Rain.amt.x;
+    splash = c.b * edge * Rain.amt.y;
+    mask = edge;
+  }
+  let far = (1.0 - mask) * intensity * Rain.amt.x;
+  let q = xz * (7.0 + intensity * 14.0) + Rain.wind.xy * Rain.cam.w * (1.6 + intensity * 4.5);
+  let n1 = vec2f(sin(q.x * 1.71 + q.y * 0.41), cos(q.y * 1.37 - q.x * 0.23));
+  let n2 = vec2f(sin(q.y * 2.83 + Rain.cam.w * 5.2), sin(q.x * 2.27 - Rain.cam.w * 4.1));
+  slope += (n1 * 0.62 + n2 * 0.38) * far * 0.045;
+  return vec4f(slope, splash, mask);
+}
+
+fn rainRough() -> f32 {
+  let i = Rain.wind.w;
+  return i * i * 0.010 + i * 0.004 * Rain.amt.x;
+}
+
+fn rainFlash(nrm: vec3f) -> vec3f {
+  let flash = Rain.amt.z;
+  if (flash < 0.01 || Rain.bolt.w < 0.5) { return vec3f(0.0); }
+  let bolt = normalize(vec3f(Rain.bolt.x, 0.22, Rain.bolt.y));
+  let fill = 0.28 + 0.72 * max(dot(nrm, bolt), 0.0);
+  return vec3f(0.62, 0.74, 1.0) * flash * fill * 0.85;
+}
+`;
+
+const RAIN_SKY = RAIN_STRUCT + /* wgsl */ `
+@group(0) @binding(5) var<uniform> Rain: RainU;
+
+fn rainBolt(dir: vec3f) -> vec3f {
+  if (Rain.bolt.w < 0.5 || Rain.amt.z < 0.015) { return vec3f(0.0); }
+  let horiz = normalize(dir.xz + vec2f(1e-5, 0.0));
+  let aim = normalize(Rain.bolt.xy + vec2f(1e-5, 0.0));
+  let ang = acos(clamp(dot(horiz, aim), -1.0, 1.0));
+  let yq = floor(dir.y * 46.0 + Rain.bolt.z);
+  let jag = (fract(sin(yq * 91.73) * 43758.5453) - 0.5) * 0.10;
+  let above = smoothstep(-0.04, 0.03, dir.y) * smoothstep(0.94, 0.28, dir.y);
+  let d = abs(ang - jag);
+  let core = exp(-d * d / 0.00028) * above;
+  let glow = exp(-d * d / 0.009) * above;
+  let branch = exp(-abs(ang - jag - 0.11) * 26.0) * smoothstep(0.04, 0.18, dir.y) * smoothstep(0.62, 0.22, dir.y);
+  return vec3f(0.75, 0.84, 1.0) * (core * 22.0 + glow * 1.15 + branch * 3.2) * Rain.amt.z;
+}
+
+fn applyRainSky(dir: vec3f, L: vec3f) -> vec3f {
+  var o = L * mix(1.0, 0.46, Rain.atmo.z) * mix(1.0, Rain.atmo.y, 0.72);
+  o += rainBolt(dir);
+  // A cool lift, kept under the bolt so the strike stays visible after tonemap.
+  o += vec3f(0.55, 0.68, 1.0) * Rain.amt.z * 0.42;
+  return o;
+}
+`;
+
 // ---- js/wgsl/ocean.js ----
 // Ocean surface + sky background rendering.
+
 
 
 const RENDER_BINDINGS = /* wgsl */ `
@@ -1608,7 +2038,7 @@ const RENDER_BINDINGS = /* wgsl */ `
 // screen-space derivative of each layer's edge function sets the width of its opacity edge.
 const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
 @group(0) @binding(4) var starMap: texture_2d<f32>;
-` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
 struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
@@ -1632,7 +2062,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
   let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a, true) + cl.rgb + sunDisk(dir) * sunT;
-  return vec4f(L, 1.0);
+  return vec4f(applyRainSky(d2, L), 1.0);
 }
 `;
 
@@ -1645,7 +2075,7 @@ const OCEAN = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
 @group(0) @binding(9) var sampR: sampler;
 @group(0) @binding(10) var foamWorld: texture_2d_array<f32>;
 @group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>; // [0] sun, [1] moon cloud transmittance
-` + SKY_RENDER_FUNCS + /* wgsl */ `
+` + SKY_RENDER_FUNCS + RAIN_OCEAN + /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 const ENV_TEXELS_PER_RAD: f32 = ${ENV_SIZE}.0 / 1.5708;
 const TEX_N: f32 = ${N}.0;
@@ -1677,6 +2107,7 @@ struct VSOut {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
   }
+  disp.y += rainHeight(xz);
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
   o.rel = world - F.camPos.xyz;
@@ -1772,6 +2203,8 @@ fn moonIlluminance() -> vec3f {
     jxz += av.w;
     cov += vec3f(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
   }
+  let rain = rainField(xz);
+  s += rain.xy;
   let dist = length(in.rel);
   let V = -in.rel / dist;
   let Ld = F.sunDir.xyz;
@@ -1779,8 +2212,9 @@ fn moonIlluminance() -> vec3f {
   // slope statistics (LEAN): add unresolved capillary roughness + sun disk size
   // unresolved roughness; grows with distance to reach Cox-Munk-like totals in the far sheen
   let unres = F.waterCol.w + 0.0035 * smoothstep(30.0, 500.0, dist);
-  cov.x += unres;
-  cov.y += unres;
+  let wet = rainRough();
+  cov.x += unres + wet;
+  cov.y += unres + wet;
   let jx = max(1.0 + jxx, 0.15);
   let jz = max(1.0 + jzz, 0.15);
   let sl = vec2f(s.x / jx, s.y / jz);
@@ -1792,7 +2226,7 @@ fn moonIlluminance() -> vec3f {
   cov += aa * min(1.0, 0.03 / max(max(aa.x, aa.y), 1e-8));
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
 
-  let sunE = sunIlluminance() * sunVis[0];
+  let sunE = sunIlluminance() * sunVis[0] * Rain.atmo.y;
   let moonL = normalize(F.moonDir.xyz);
   let moonE = moonIlluminance();
   let skyUp = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
@@ -1808,6 +2242,10 @@ fn moonIlluminance() -> vec3f {
   var spec = sunE * facetGlitter(V, Ld, sl, cov, SUN_ANG_R) * step(0.0, Ld.y);
   if (moonE.g > 0.0) {
     spec += moonE * facetGlitter(V, moonL, sl, cov, MOON_DISC * max(F.moonLight.w, 0.0));
+  }
+  if (Rain.amt.z > 0.01 && Rain.bolt.w > 0.5) {
+    let bolt = normalize(vec3f(Rain.bolt.x, 0.22, Rain.bolt.y));
+    spec += vec3f(0.72, 0.82, 1.0) * Rain.amt.z * facetGlitter(V, bolt, sl, cov, 0.03) * 4.0;
   }
 
   // ---- sky reflection ----
@@ -1869,6 +2307,7 @@ fn moonIlluminance() -> vec3f {
   var foamMask = clamp(fm * smoothstep(0.0, 0.5, cover), 0.0, 1.0) * (0.68 + 0.32 * smoothstep(0.3, 0.9, cover));
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
+  foamMask = max(foamMask, smoothstep(0.05, 0.5, rain.z) * 0.94);
   // submerged bubbles brighten and tint the water just beneath foam
   body += F.sssCol.rgb * (sunE * 0.05 + ambient * 0.35) * clamp(cover, 0.0, 1.0);
   body += vec3f(0.10, 0.32, 0.30) * skyUp * fwl.g * 0.35;
@@ -1896,11 +2335,12 @@ fn moonIlluminance() -> vec3f {
     return vec4f(fwl.r, fwl.g, fresh, 1.0) * 0.2;
   }
   var col = body * (1.0 - Fr) + refl * Fr + spec;
+  col += rainFlash(nrm);
   col = mix(col, foamLit, foamMask * 0.95);
 
   // ---- aerial perspective ----
   // aerial perspective: atmosphere extinction plus a marine haze floor
-  let T = exp(-max(F.fogExt.rgb, vec3f(F.fogExt.w)) * dist);
+  let T = exp(-(max(F.fogExt.rgb, vec3f(F.fogExt.w)) + vec3f(Rain.atmo.x)) * dist);
   let hz = normalize(vec3f(-V.x, 0.002, -V.z));
   let fogCol = skyAtmo(hz);
   col = col * T + fogCol * (1.0 - T);
@@ -2139,7 +2579,18 @@ function createOceanAudio(button, onChange) {
   let rumble = null;
   let wash = null;
   let hiss = null;
+  let rainBus = null;
+  let rainBed = null;
+  let rainRoar = null;
+  let rainTick = null;
+  let rainWind = null;
+  let thunderGain = null;
+  let crackBuffer = null;
+  let rumbleBuffer = null;
+  const thunderQueue = [];
   let enabled = false;
+  let oceanAudible = true;
+  let rainAudible = true;
   let lastHeight = 0;
   let heightReady = false;
   let waveVelocity = 0;
@@ -2186,6 +2637,27 @@ function createOceanAudio(button, onChange) {
     hiss.gain.connect(pan);
     pan.connect(master);
     master.connect(compressor);
+
+    rainBus = ctx.createGain();
+    rainBus.gain.value = 0;
+    const rainPink = noiseBuffer(ctx, 7.7, 'pink', 0x5a11);
+    const rainBrown = noiseBuffer(ctx, 9.1, 'brown', 0x71de);
+    const rainWhite = noiseBuffer(ctx, 5.3, 'white', 0x2c0d);
+    rainBed = makeLayer(ctx, rainPink, [['highpass', 700], ['lowpass', 5400]]);
+    rainRoar = makeLayer(ctx, rainBrown, [['highpass', 90], ['lowpass', 520]]);
+    rainTick = makeLayer(ctx, rainWhite, [['highpass', 1800], ['lowpass', 7600]]);
+    rainWind = makeLayer(ctx, rainBrown, [['lowpass', 240]]);
+    rainBed.gain.connect(rainBus);
+    rainRoar.gain.connect(rainBus);
+    rainTick.gain.connect(rainBus);
+    rainWind.gain.connect(rainBus);
+    thunderGain = ctx.createGain();
+    thunderGain.gain.value = 0.9;
+    thunderGain.connect(compressor);
+    rainBus.connect(compressor);
+    crackBuffer = noiseBuffer(ctx, 2.0, 'pink', 0xabc1);
+    rumbleBuffer = noiseBuffer(ctx, 5.5, 'brown', 0x44e2);
+
     compressor.connect(ctx.destination);
     return true;
   }
@@ -2209,9 +2681,12 @@ function createOceanAudio(button, onChange) {
 
     if (enabled) {
       await ctx.resume();
+      thunderGain?.gain.setTargetAtTime(0.9, ctx.currentTime, 0.1);
     } else {
       const token = suspendToken;
       master.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+      rainBus?.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+      thunderGain?.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
       setTimeout(() => {
         if (!enabled && token === suspendToken && ctx.state === 'running') ctx.suspend();
       }, 450);
@@ -2241,6 +2716,8 @@ function createOceanAudio(button, onChange) {
     const breaking = clamp(crest * (0.35 + rising * 0.65) * params.foam * sync);
     const altitude = Math.max(0, camera.y - waterHeight);
     const distanceFade = 1 / (1 + Math.max(0, altitude - 3) / 85);
+    oceanAudible = params.oceanPlayback !== false;
+    rainAudible = params.rainPlayback !== false;
     const volume = clamp(params.audioVolume, 0, 1) * distanceFade;
     const rumbleLevel = clamp(params.audioRumble ?? 1, 0, 2);
     const washLevel = clamp(params.audioWash ?? 1, 0, 2);
@@ -2248,7 +2725,7 @@ function createOceanAudio(button, onChange) {
     const stereo = clamp(params.audioStereo ?? 1, 0, 2);
     const now = ctx.currentTime;
 
-    master.gain.setTargetAtTime(volume * 0.36, now, 0.12);
+    master.gain.setTargetAtTime(oceanAudible ? volume * 0.36 : 0, now, 0.12);
     rumble.gain.gain.setTargetAtTime((0.16 + surge * 0.22 + wind * 0.08) * rumbleLevel, now, 0.22);
     wash.gain.gain.setTargetAtTime((0.20 + surge * 0.28 + breaking * 0.24) * washLevel, now, 0.10);
     hiss.gain.gain.setTargetAtTime((0.025 + wind * 0.10 + breaking * 0.22) * hissLevel, now, 0.07);
@@ -2257,6 +2734,145 @@ function createOceanAudio(button, onChange) {
 
     const windAngle = params.windDir * Math.PI / 180 - camera.yaw;
     pan.pan.setTargetAtTime(Math.sin(windAngle) * 0.28 * stereo, now, 0.3);
+    updateRain(now, sampleDt, camera, params);
+  }
+
+  function updateRain(now, dt, camera, params) {
+    if (!rainBus) return;
+    if (!rainAudible) {
+      rainBus.gain.setTargetAtTime(0, now, 0.12);
+      thunderGain?.gain.setTargetAtTime(0, now, 0.08);
+      thunderQueue.length = 0;
+      return;
+    }
+    thunderGain?.gain.setTargetAtTime(0.9, now, 0.1);
+    const intensity = params.rain ? clamp(params.rainIntensity, 0, 1) : 0;
+    const style = params.rainStyle || 'rain';
+    const storm = style === 'thunderstorm' ? 1 : 0;
+    const hurricane = style === 'hurricane' ? 1 : 0;
+    const volume = clamp(params.rainVolume ?? 0.8, 0, 1);
+    const drops = clamp(params.rainDrops ?? 1, 0, 2);
+    const windLevel = clamp(params.rainWind ?? 1, 0, 2);
+    const audible = intensity * volume;
+    rainBus.gain.setTargetAtTime(audible * 0.85, now, 0.18);
+    rainBed.gain.gain.setTargetAtTime((0.04 + intensity * 0.22) * (1.1 - hurricane * 0.25), now, 0.2);
+    rainRoar.gain.gain.setTargetAtTime(intensity * intensity * (0.08 + storm * 0.08 + hurricane * 0.16), now, 0.25);
+    const tick = (0.015 + (1 - intensity) * intensity * 0.12) * drops;
+    if (tick > 0.02 && Math.random() < dt * (3 + intensity * 46) * drops) {
+      const hit = 0.05 + Math.random() * 0.16 * (0.4 + intensity);
+      rainTick.gain.gain.setValueAtTime(Math.max(hit, 0.0008), now);
+      rainTick.gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.045 + Math.random() * 0.03);
+    } else {
+      rainTick.gain.gain.setTargetAtTime(0.008 + intensity * 0.05 * drops, now, 0.08);
+    }
+    const gust = 0.75 + 0.25 * Math.sin(now * (0.35 + hurricane * 0.4));
+    const windAmt = intensity * (0.04 + storm * 0.12 + hurricane * 0.55) * windLevel * gust;
+    rainWind.gain.gain.setTargetAtTime(windAmt, now, 0.3);
+    rainWind.tail.frequency.setTargetAtTime(140 + hurricane * 90 + gust * 40, now, 0.4);
+    flushThunder(now, camera, params);
+  }
+
+  function strike(azimuth, distance) {
+    if (!ctx || !enabled || !rainAudible) return;
+    const delay = clamp(distance, 40, 2800) / 343;
+    thunderQueue.push({ azimuth, distance: clamp(distance, 40, 2800), at: ctx.currentTime + delay });
+  }
+
+  function flushThunder(now, camera, params) {
+    const snap = clamp(params.rainSnap ?? 0.9, 0, 2);
+    const rumbleLevel = clamp(params.rainRumble ?? 0.9, 0, 2);
+    if (snap <= 0.001 && rumbleLevel <= 0.001) {
+      thunderQueue.length = 0;
+      return;
+    }
+    for (let i = thunderQueue.length - 1; i >= 0; i--) {
+      const bolt = thunderQueue[i];
+      if (now + 0.03 < bolt.at) continue;
+      thunderQueue.splice(i, 1);
+      playThunder(now, bolt, camera.yaw, snap, rumbleLevel);
+    }
+  }
+
+  // A real crack is a shock, not a click. The channel arrives as a few tearing
+  // bursts, each falling from a bright edge down into a low body, and then the rumble.
+  function playCrack(now, near, snap, output) {
+    if (snap <= 0.001) return;
+    const rips = 1 + Math.round(near * 5);
+    let cursor = 0;
+    for (let i = 0; i < rips; i++) {
+      if (i > 0) cursor += 0.016 + Math.random() * 0.05;
+      const when = now + cursor;
+      const src = ctx.createBufferSource();
+      src.buffer = crackBuffer;
+      const offset = Math.random() * Math.max(0, crackBuffer.duration - 0.45);
+      src.playbackRate.value = 0.82 + Math.random() * 0.46;
+      const sweep = ctx.createBiquadFilter();
+      sweep.type = 'lowpass';
+      sweep.Q.value = i === 0 ? 0.65 : 0.85 + Math.random() * 0.35;
+      const bright = i === 0 ? 1400 + near * 2400 : 420 + near * 1100;
+      const startHz = bright * (0.78 + Math.random() * 0.35);
+      const endHz = Math.max(48, 80 + near * 50 + Math.random() * 30);
+      const sweepTime = (i === 0 ? 0.085 : 0.04 + Math.random() * 0.045) + (1 - near) * 0.05;
+      sweep.frequency.setValueAtTime(startHz, when);
+      sweep.frequency.exponentialRampToValueAtTime(endHz, when + sweepTime);
+      const gain = ctx.createGain();
+      const falloff = i === 0 ? 1 : 0.42 * Math.pow(0.78, i - 1);
+      const amp = snap * (0.22 + near * 0.34) * falloff;
+      const dur = sweepTime + 0.04 + (1 - near) * 0.07;
+      gain.gain.setValueAtTime(Math.max(0.001, amp), when);
+      gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+      src.connect(sweep);
+      sweep.connect(gain);
+      gain.connect(output);
+      src.start(when, offset);
+      src.stop(when + dur + 0.04);
+    }
+
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(70 + near * 80, now);
+    body.frequency.exponentialRampToValueAtTime(36, now + 0.16);
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(Math.max(0.001, snap * (0.08 + near * 0.2)), now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    body.connect(bodyGain);
+    bodyGain.connect(output);
+    body.start(now);
+    body.stop(now + 0.22);
+  }
+
+  function playThunder(now, bolt, yaw, snap, rumbleLevel) {
+    const near = 1 / (1 + bolt.distance / 700);
+    const panNode = ctx.createStereoPanner();
+    panNode.pan.value = clamp(Math.sin(bolt.azimuth - yaw) * 0.85, -1, 1);
+    panNode.connect(thunderGain);
+
+    const crackOut = ctx.createGain();
+    const distance = ctx.createBiquadFilter();
+    distance.type = 'lowpass';
+    distance.frequency.value = 450 + near * 5000;
+    distance.Q.value = 0.4;
+    crackOut.connect(distance);
+    distance.connect(panNode);
+    playCrack(now, near, snap, crackOut);
+
+    if (rumbleLevel <= 0.001) return;
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = rumbleBuffer;
+    rumble.loop = true;
+    const rumbleGain = ctx.createGain();
+    const rumbleFilter = ctx.createBiquadFilter();
+    rumbleFilter.type = 'lowpass';
+    rumbleFilter.frequency.value = 90 + near * 180;
+    const rumbleAmp = Math.max(0.001, (0.2 + (1 - near) * 0.35 + near * 0.25) * rumbleLevel);
+    rumbleGain.gain.setValueAtTime(0.001, now);
+    rumbleGain.gain.exponentialRampToValueAtTime(rumbleAmp, now + 0.25 + (1 - near) * 0.45);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + 2.2 + (1 - near) * 3.2);
+    rumble.connect(rumbleFilter);
+    rumbleFilter.connect(rumbleGain);
+    rumbleGain.connect(panNode);
+    rumble.start(now);
+    rumble.stop(now + 6);
   }
 
   if (button) button.addEventListener('click', (event) => {
@@ -2269,6 +2885,7 @@ function createOceanAudio(button, onChange) {
     toggle: () => setEnabled(!enabled),
     setEnabled,
     update,
+    strike,
   };
 }
 
@@ -2979,7 +3596,7 @@ function playAlertScroll(root) {
   viewport.classList.add('scrolling');
 }
 
-function createWeatherWidget(root, status) {
+function createWeatherWidget(root, status, onObservation) {
   let timer = 0;
   let request = 0;
   let controller = null;
@@ -3046,7 +3663,7 @@ function createWeatherWidget(root, status) {
   }
 
   async function refresh(config) {
-    if (!config.weather) return;
+    if (!config.weather && !config.rainFollow) return;
     const token = ++request;
     controller?.abort();
     controller = new AbortController();
@@ -3099,6 +3716,7 @@ function createWeatherWidget(root, status) {
         daily: todayTemperatures(weather.daily, weather.current?.time),
         updatedAt: now,
       };
+      onObservation?.(liveObservation());
       status(`${location.name || location.query} weather updated`);
       render(config);
     } catch (error) {
@@ -3109,18 +3727,27 @@ function createWeatherWidget(root, status) {
     }
   }
 
+  function liveObservation() {
+    if (!data?.current || data.error) return null;
+    return {
+      code: data.current.weather_code,
+      precipitation: data.current.precipitation,
+      chance: data.hourly?.chances?.[0] ?? 0,
+    };
+  }
+
   function update(config, fetchNow = false) {
     lastConfig = { ...config };
     render(lastConfig);
     clearInterval(timer);
     clearTimeout(fetchDelay);
-    if (config.weather) {
+    if (config.weather || config.rainFollow) {
       timer = setInterval(() => refresh(lastConfig), Math.max(1, config.weatherRefresh) * 60000);
       if (fetchNow || !data) fetchDelay = setTimeout(() => refresh(lastConfig), 50);
     }
   }
 
-  return { update, refresh: () => lastConfig && refresh(lastConfig) };
+  return { update, refresh: () => lastConfig && refresh(lastConfig), getObservation: liveObservation };
 }
 
 // ---- js/main.js ----
@@ -3128,6 +3755,7 @@ function createWeatherWidget(root, status) {
 // FFT ocean (5 cascades) + CDLOD surface mesh + physically based sky + HDR post.
 // All per-frame data lives in preallocated typed arrays / descriptors (no per-frame garbage
 // apart from the unavoidable swap-chain view and command buffer objects).
+
 
 
 
@@ -3206,6 +3834,8 @@ const P = {
   audioSync: 1,
   audioStereo: 1,
   sound: false,
+  oceanPlayback: true,
+  rainPlayback: true,
   showButtons: true,
   showInfo: false,
   clock: true,
@@ -3235,6 +3865,18 @@ const P = {
   weatherWind: true,
   weatherForecast: true,
   weatherAlerts: true,
+  rain: false,
+  rainIntensity: 0.5,
+  rainStyle: 'rain',
+  rainFollow: false,
+  rainRipples: 1,
+  rainSplashes: 1,
+  rainLightning: 0,
+  rainVolume: 0.8,
+  rainDrops: 1,
+  rainWind: 1,
+  rainSnap: 0.9,
+  rainRumble: 0.9,
 };
 const DEFAULTS = { ...P };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
@@ -3282,6 +3924,7 @@ async function main() {
   const oceanAudio = createOceanAudio(document.getElementById('sound'), (on) => {
     P.sound = on;
     rememberSettings();
+    applySoundPlayback();
     if (!soundControl) return;
     soundControl.input.checked = on;
     soundControl.output.textContent = on ? 'On' : 'Off';
@@ -3514,10 +4157,68 @@ async function main() {
     fragment: { module: compMod, entryPoint: 'fs', targets: [{ format: swapFormat }] },
   });
 
-  const bgOcean = [0, 1].map((i) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
+  const rainF = new Float32Array(32);
+  const rainUBO = mkBuf(128, GU.UNIFORM | GU.COPY_DST, 'rain ubo');
+  const stampBytes = RAIN_RES * RAIN_RES * 4;
+  const dentBuf = mkBuf(stampBytes, GU.STORAGE, 'rain dent');
+  const splashBuf = mkBuf(stampBytes, GU.STORAGE, 'rain splash');
+  const dropBuf = mkBuf(MAX_DROPS * 32, GU.STORAGE, 'rain drops');
+  const rainTex = [0, 1].map((i) => device.createTexture({
+    label: 'rain ripple ' + i, size: [RAIN_RES, RAIN_RES], format: 'rgba16float',
+    usage: TU.TEXTURE_BINDING | TU.STORAGE_BINDING,
+  }));
+  const rainSamp = device.createSampler({
+    magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
+  });
+  const PREMUL = {
+    color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  };
+  const [rainInitPipe, rainDropPipe, rainRipplePipe, rainClearPipe, rainDrawMod, rainMistMod] = await Promise.all([
+    computePipe(RAIN_DROP_INIT, 'rain init'),
+    computePipe(RAIN_DROP_UPDATE, 'rain drops'),
+    computePipe(RAIN_RIPPLE, 'rain ripple'),
+    computePipe(RAIN_CLEAR, 'rain clear'),
+    shader(RAIN_DRAW, 'rain draw'),
+    shader(RAIN_MIST, 'rain mist'),
+  ]);
+  const rainDepth = { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'greater' };
+  const rainDrawPipe = await device.createRenderPipelineAsync({
+    label: 'rain draw', layout: 'auto',
+    vertex: { module: rainDrawMod, entryPoint: 'vs' },
+    fragment: { module: rainDrawMod, entryPoint: 'fs', targets: [{ format: HDR, blend: PREMUL }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: rainDepth,
+    multisample: { count: MSAA },
+  });
+  const rainMistPipe = await device.createRenderPipelineAsync({
+    label: 'rain mist', layout: 'auto',
+    vertex: { module: rainMistMod, entryPoint: 'vs' },
+    fragment: { module: rainMistMod, entryPoint: 'fs', targets: [{ format: HDR, blend: PREMUL }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'always' },
+    multisample: { count: MSAA },
+  });
+  const bgRainInit = bg(rainInitPipe, [{ buffer: rainUBO }, { buffer: dropBuf }], 'rain init');
+  const bgRainDrop = bg(rainDropPipe, [{ buffer: rainUBO }, { buffer: frameUBO }, { buffer: dropBuf },
+    { buffer: dentBuf }, { buffer: splashBuf }, fullArr(dispTex), samplerSim], 'rain drop');
+  const bgRainRipple = [0, 1].map((i) => bg(rainRipplePipe, [{ buffer: rainUBO }, rainTex[1 - i].createView(),
+    rainTex[i].createView(), { buffer: dentBuf }, { buffer: splashBuf }], 'rain ripple ' + i));
+  const bgRainClear = bg(rainClearPipe, [{ buffer: dentBuf }, { buffer: splashBuf }], 'rain clear');
+  const bgRainDraw = bg(rainDrawPipe, [{ buffer: frameUBO }, { buffer: rainUBO }, { buffer: dropBuf }], 'rain draw');
+  const bgRainMist = bg(rainMistPipe, [{ buffer: frameUBO }, { buffer: rainUBO }], 'rain mist');
+  let rainCur = 0;
+  let rainInited = false;
+  let rainActive = 0;
+  let rainPrevX = null;
+  let rainPrevZ = null;
+  let boltFlash = 0, boltX = 1, boltZ = 0, boltSeed = 1, boltOn = 0;
+  let boltLife = 0, boltDur = 0.2, boltPower = 1, nextBolt = 2.5;
+
+  const bgOcean = [0, 1].map((i) => [0, 1].map((r) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
-    fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
-  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView], 'sky');
+    fullArr(foamW[i]), { buffer: sunVisBuf }, { buffer: rainUBO }, rainTex[r].createView(), rainSamp], 'ocean' + i + r)));
+  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView, { buffer: rainUBO }], 'sky');
 
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
@@ -4008,6 +4709,7 @@ async function main() {
       control.input.value = text;
       control.output.textContent = text;
     }
+    if (key === 'rainIntensity') showRainReadout();
   }
   function updateDynamicClouds() {
     if (P.cloudMode !== 'dynamic') return;
@@ -4031,23 +4733,27 @@ async function main() {
     const lowDir = (225 + 65 * wave(121, 0.4) + 25 * wave(43, -1.2) + 360) % 360;
     const lowWind = 3 + 10 * front + 4 * (0.5 + 0.5 * wave(31, 2.3));
     const lowSun = Math.exp(-((elev - 6) ** 2) / 180) * weatherSmooth(-3, 4, elev);
+    const showWeatherCloud = (key, value) => {
+      if (rainAmount() > 0.02 && RAIN_CLOUDS.includes(key)) return;
+      showDrivenSetting(key, value);
+    };
     showDrivenSetting('cloudMotion', true);
-    showDrivenSetting('clouds', Math.min(0.92, 0.04 + 0.72 * moisture + 0.16 * convection * (1 - 0.55 * moisture)));
-    showDrivenSetting('cloudAltitude', 0.75 + 1.8 * (1 - moisture) + 0.35 * convection);
-    showDrivenSetting('cloudScale', 0.75 + 0.65 * (1 - moisture) + 0.25 * convection);
-    showDrivenSetting('cloudDensity', 0.8 + 3.4 * moisture + 0.5 * convection);
-    showDrivenSetting('cloudWindSpeed', lowWind);
-    showDrivenSetting('cloudWindDir', lowDir);
-    showDrivenSetting('cloudEvolution', 0.15 + 0.65 * Math.min(1, lowWind / 18) + 0.35 * convection);
-    showDrivenSetting('veil', Math.min(0.82, 0.03 + 0.55 * (0.55 * front + 0.45 * moisture)));
-    showDrivenSetting('highCloudAltitude', 7 + 3 * (1 - front));
-    showDrivenSetting('highCloudScale', 0.75 + 0.7 * (1 - front));
-    showDrivenSetting('highCloudDensity', 0.3 + 1.25 * (0.55 * front + 0.45 * moisture));
-    showDrivenSetting('highCloudWindSpeed', 18 + 25 * front + 8 * (0.5 + 0.5 * wave(53, 0.7)));
-    showDrivenSetting('highCloudWindDir', (lowDir + 24 + 16 * wave(83, 2.5) + 360) % 360);
-    showDrivenSetting('cloudSoftness', 0.75 + 0.55 * moisture + 0.15 * (1 - daylight));
-    showDrivenSetting('cloudSilver', 0.15 + 1.55 * lowSun);
-    showDrivenSetting('cloudAmbient', 0.85 + 0.4 * daylight);
+    showWeatherCloud('clouds', Math.min(0.92, 0.04 + 0.72 * moisture + 0.16 * convection * (1 - 0.55 * moisture)));
+    showWeatherCloud('cloudAltitude', 0.75 + 1.8 * (1 - moisture) + 0.35 * convection);
+    showWeatherCloud('cloudScale', 0.75 + 0.65 * (1 - moisture) + 0.25 * convection);
+    showWeatherCloud('cloudDensity', 0.8 + 3.4 * moisture + 0.5 * convection);
+    showWeatherCloud('cloudWindSpeed', lowWind);
+    showWeatherCloud('cloudWindDir', lowDir);
+    showWeatherCloud('cloudEvolution', 0.15 + 0.65 * Math.min(1, lowWind / 18) + 0.35 * convection);
+    showWeatherCloud('veil', Math.min(0.82, 0.03 + 0.55 * (0.55 * front + 0.45 * moisture)));
+    showWeatherCloud('highCloudAltitude', 7 + 3 * (1 - front));
+    showWeatherCloud('highCloudScale', 0.75 + 0.7 * (1 - front));
+    showWeatherCloud('highCloudDensity', 0.3 + 1.25 * (0.55 * front + 0.45 * moisture));
+    showWeatherCloud('highCloudWindSpeed', 18 + 25 * front + 8 * (0.5 + 0.5 * wave(53, 0.7)));
+    showWeatherCloud('highCloudWindDir', (lowDir + 24 + 16 * wave(83, 2.5) + 360) % 360);
+    showWeatherCloud('cloudSoftness', 0.75 + 0.55 * moisture + 0.15 * (1 - daylight));
+    showWeatherCloud('cloudSilver', 0.15 + 1.55 * lowSun);
+    showWeatherCloud('cloudAmbient', 0.85 + 0.4 * daylight);
   }
   function updateDynamicStars() {
     if (P.starMode !== 'dynamic') return;
@@ -4167,12 +4873,13 @@ async function main() {
     setPanelOpen(false);
   });
   const panelBody = document.getElementById('panel-body');
-  const BOOL_KEYS = new Set(['sound', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+  const BOOL_KEYS = new Set(['sound', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
     'compass', 'compassTilt',
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
+    'rain', 'rainFollow',
     'moon', 'stars', 'cloudMotion']);
   const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
-    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode']);
+    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode', 'rainStyle']);
   const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
     'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
@@ -4186,6 +4893,16 @@ async function main() {
   let cloudManual = null;
   let starManual = null;
   let moonManual = null;
+  let hurricaneManual = null;
+  let rainManual = null;
+  let rainCloudManual = null;
+  const HURRICANE_OCEAN = ['windSpeed', 'swellHs', 'choppy', 'foam', 'haze'];
+  // A raining sky is a nimbostratus deck: low, broad, soft, and gray, with the
+  // upper sheet closed so fair-weather blue does not show through the gaps.
+  const RAIN_CLOUDS = [
+    'clouds', 'cloudAltitude', 'cloudScale', 'cloudDensity',
+    'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
+  ];
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
   // Time lapse advances the sun, moon, and stars by `lapsePace` sky minutes per real
@@ -4224,6 +4941,28 @@ async function main() {
       { settings: [
         ['showButtons', 'Onscreen buttons', 'toggle', 'Show', 'Hide'],
         ['showInfo', 'Onscreen information', 'toggle', 'Show', 'Hide'],
+      ] },
+    ] },
+    { title: 'Sound', groups: [
+      { settings: [
+        ['sound', 'Playback', 'toggle', 'On', 'Off'],
+      ] },
+      { title: 'Ocean', settings: [
+        ['oceanPlayback', 'Playback', 'toggle', 'On', 'Off'],
+        ['audioVolume', 'Volume', 0, 1, 0.01, 'audio'],
+        ['audioRumble', 'Swell rumble', 0, 2, 0.01, 'audio'],
+        ['audioWash', 'Surface wash', 0, 2, 0.01, 'audio'],
+        ['audioHiss', 'Crest hiss', 0, 2, 0.01, 'audio'],
+        ['audioSync', 'Wave sync', 0, 2, 0.01, 'audio'],
+        ['audioStereo', 'Stereo width', 0, 2, 0.01, 'audio'],
+      ] },
+      { title: 'Rain', settings: [
+        ['rainPlayback', 'Playback', 'toggle', 'On', 'Off'],
+        ['rainVolume', 'Volume', 0, 1, 0.01, 'rain'],
+        ['rainDrops', 'Drop impacts', 0, 2, 0.01, 'rain'],
+        ['rainWind', 'Wind', 0, 2, 0.01, 'rain'],
+        ['rainSnap', 'Thunder snap', 0, 2, 0.01, 'rain'],
+        ['rainRumble', 'Thunder rumble', 0, 2, 0.01, 'rain'],
       ] },
     ] },
     { title: 'Clock', groups: [
@@ -4308,21 +5047,6 @@ async function main() {
         ['foam', 'Foam', 0, 3, 0.01, ''],
       ] },
     ] },
-    { title: 'Sound', groups: [
-      { title: 'Playback', settings: [
-        ['sound', 'Sound', 'toggle', 'On', 'Off'],
-        ['audioVolume', 'Volume', 0, 1, 0.01, 'audio'],
-      ] },
-      { title: 'Layers', settings: [
-        ['audioRumble', 'Swell rumble', 0, 2, 0.01, 'audio'],
-        ['audioWash', 'Surface wash', 0, 2, 0.01, 'audio'],
-        ['audioHiss', 'Crest hiss', 0, 2, 0.01, 'audio'],
-      ] },
-      { title: 'Motion', settings: [
-        ['audioSync', 'Wave sync', 0, 2, 0.01, 'audio'],
-        ['audioStereo', 'Stereo width', 0, 2, 0.01, 'audio'],
-      ] },
-    ] },
     { title: 'Sky', groups: [
       { title: 'Mode', settings: [
         ['skyMode', 'Sky behavior', 'select', [
@@ -4402,6 +5126,25 @@ async function main() {
         ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
         ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
       ] },
+      { title: 'Rain', groups: [
+        { title: 'Weather', settings: [
+          ['rain', 'Rain', 'toggle', 'On', 'Off'],
+          ['rainIntensity', 'Intensity', 0, 1, 0.01, 'rain'],
+          ['rainStyle', 'Style', 'select', [
+            ['rain', 'Rain'],
+            ['thunderstorm', 'Thunderstorm'],
+            ['hurricane', 'Hurricane'],
+          ]],
+          ['rainFollow', 'Follow weather card', 'toggle', 'On', 'Off'],
+        ] },
+        { title: 'Surface', settings: [
+          ['rainRipples', 'Ripples', 0, 2, 0.01, 'rain'],
+          ['rainSplashes', 'Splashes', 0, 2, 0.01, 'rain'],
+        ] },
+        { title: 'Storm', settings: [
+          ['rainLightning', 'Lightning', 0, 1, 0.01, 'rain'],
+        ] },
+      ] },
     ] },
   ];
   const RANGES = new Map();
@@ -4435,10 +5178,18 @@ async function main() {
     const range = RANGES.get(key);
     return range ? Math.min(range[1], Math.max(range[0], n)) : n;
   }
+  function migrateThunder(data) {
+    if (!data || typeof data !== 'object' || !Object.hasOwn(data, 'rainThunder')) return;
+    const value = coerceSetting('rainSnap', data.rainThunder);
+    if (value === undefined) return;
+    if (!Object.hasOwn(data, 'rainSnap')) data.rainSnap = value;
+    if (!Object.hasOwn(data, 'rainRumble')) data.rainRumble = value;
+  }
   function restoreSettings() {
     let data = null;
     try { data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch { /* unavailable */ }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+    migrateThunder(data);
     for (const key of Object.keys(P)) {
       if (!Object.hasOwn(data, key)) continue;
       const value = coerceSetting(key, data[key]);
@@ -4454,9 +5205,12 @@ async function main() {
   const visitOnly = new Set();
   function storedSettingValue(key) {
     if (sunManual && SUN_DRIVEN.includes(key)) return sunManual[key];
+    if (rainCloudManual && Object.hasOwn(rainCloudManual, key)) return rainCloudManual[key];
+    if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) return hurricaneManual[key];
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
     if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
     if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    if (rainManual && Object.hasOwn(rainManual, key)) return rainManual[key];
     return P[key];
   }
   function settingsSnapshot() {
@@ -4511,6 +5265,7 @@ async function main() {
     if (!shared) sharedSettingsFailed = true;
     else {
       for (const key of Object.keys(DEFAULTS)) P[key] = DEFAULTS[key];
+      migrateThunder(shared);
       for (const key of Object.keys(shared)) {
         if (!Object.hasOwn(P, key)) continue;
         const value = coerceSetting(key, shared[key]);
@@ -4521,6 +5276,10 @@ async function main() {
         }
       }
     }
+  }
+  if (qs.has('rainThunder') && !qs.has('rainSnap') && !qs.has('rainRumble')) {
+    const thunder = coerceSetting('rainSnap', qs.get('rainThunder'));
+    if (thunder !== undefined) P.rainSnap = P.rainRumble = thunder;
   }
   for (const key of Object.keys(P)) {
     if (!qs.has(key)) continue;
@@ -5003,6 +5762,7 @@ async function main() {
   setInterval(updateClock, 250);
   setInterval(refreshDynamicSky, 30000);
   if (P.sound) oceanAudio.setEnabled(true);
+  applySoundPlayback();
 
   const io = document.createElement('div');
   io.className = 'io';
@@ -5047,7 +5807,7 @@ async function main() {
     const token = ++statusToken;
     setTimeout(() => { if (token === statusToken) status.textContent = ''; }, 4000);
   }
-  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note);
+  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note, () => updateFollowedRain());
   document.getElementById('weather-widget').addEventListener('click', (event) => {
     if (event.target.closest('.weather-place')) openPlaceDialog('weatherZip');
   });
@@ -5056,6 +5816,8 @@ async function main() {
     layoutCompass();
   }
   applyWeather(true);
+  applyRainFollow();
+  showRainReadout();
   addEventListener('resize', layoutCompass);
   const overlayLayout = new ResizeObserver(() => layoutCompass());
   for (const id of ['clock-widget', 'toolbar', 'hud', 'weather-widget']) overlayLayout.observe(document.getElementById(id));
@@ -5064,7 +5826,11 @@ async function main() {
     const dynamic = P.cloudMode === 'dynamic';
     if (dynamic && !cloudManual) {
       cloudManual = {};
-      for (const key of CLOUD_DRIVEN) cloudManual[key] = P[key];
+      for (const key of CLOUD_DRIVEN) {
+        cloudManual[key] = rainCloudManual && Object.hasOwn(rainCloudManual, key) ? rainCloudManual[key]
+          : hurricaneManual && Object.hasOwn(hurricaneManual, key) ? hurricaneManual[key]
+            : P[key];
+      }
     }
     if (!dynamic && cloudManual) {
       for (const key of CLOUD_DRIVEN) showDrivenSetting(key, cloudManual[key]);
@@ -5073,6 +5839,7 @@ async function main() {
     for (const key of CLOUD_DRIVEN) setSettingLocked(key, dynamic);
     refreshModeGroups();
     if (dynamic) updateDynamicClouds(0);
+    applyHurricaneState();
   }
   function refreshStarControls() {
     const day = P.skyMode === 'day';
@@ -5147,6 +5914,178 @@ async function main() {
     control.row.hidden = false;
     control.input.disabled = locked;
     control.row.classList.toggle('disabled', locked);
+  }
+  function soundGroup(title) {
+    for (const section of panelBody.querySelectorAll('.section')) {
+      if (section.querySelector(':scope > button')?.textContent !== 'Sound') continue;
+      for (const group of section.querySelectorAll(':scope > .section-body > .group')) {
+        if (group.querySelector(':scope > button')?.textContent === title) return group;
+      }
+    }
+    return null;
+  }
+  function setGroupDisabled(title, disabled) {
+    const group = soundGroup(title);
+    if (!group) return;
+    group.classList.toggle('disabled', disabled);
+    const button = group.querySelector(':scope > button');
+    button.disabled = disabled;
+    if (disabled) setDisclosure(group, false);
+  }
+  function applySoundPlayback() {
+    const oceanSound = ['audioVolume', 'audioRumble', 'audioWash', 'audioHiss', 'audioSync', 'audioStereo'];
+    const rainSound = ['rainVolume', 'rainDrops', 'rainWind', 'rainSnap', 'rainRumble'];
+    const master = Boolean(P.sound);
+    setGroupDisabled('Ocean', !master);
+    setGroupDisabled('Rain', !master);
+    setSettingLocked('oceanPlayback', !master);
+    setSettingLocked('rainPlayback', !master);
+    for (const key of oceanSound) setSettingLocked(key, !master || !P.oceanPlayback);
+    for (const key of rainSound) setSettingLocked(key, !master || !P.rainPlayback);
+  }
+  function rainWord(value) {
+    if (value < 0.04) return 'None';
+    if (value < 0.18) return 'Drizzle';
+    if (value < 0.38) return 'Light';
+    if (value < 0.62) return 'Moderate';
+    if (value < 0.84) return 'Heavy';
+    return 'Violent';
+  }
+  function showRainReadout() {
+    const control = controls.get('rainIntensity');
+    if (!control?.output) return;
+    control.output.textContent = rainWord(P.rainIntensity);
+    control.output.title = Number(P.rainIntensity).toFixed(2);
+  }
+  function showDrivenChoice(key, value) {
+    P[key] = value;
+    const control = controls.get(key);
+    if (control?.input) control.input.value = value;
+  }
+  function hurricaneOn() {
+    return Boolean(P.rain && P.rainStyle === 'hurricane');
+  }
+  function driveSea(key, value) {
+    const prev = P[key];
+    showDrivenSetting(key, value);
+    if (Math.abs(P[key] - prev) < 1e-4) return;
+    if (key === 'windSpeed' || key === 'swellHs' || key === 'choppy') needSpectrum = true;
+    if (key === 'haze') needLUT = true;
+    envFull = 2;
+  }
+  function updateHurricaneSea() {
+    if (!hurricaneOn()) return;
+    const k = Math.max(0.45, Math.min(1, P.rainIntensity || 0));
+    driveSea('windSpeed', 10 + 10 * k);
+    driveSea('swellHs', Math.min(4, 1.8 + 2.2 * k));
+    driveSea('choppy', Math.min(1.6, 1.25 + 0.3 * k));
+    driveSea('foam', Math.min(3, 1.4 + 1.2 * k));
+    driveSea('haze', Math.min(15, 5.5 + 6.5 * k));
+  }
+  function driveCloud(key, value) {
+    const control = controls.get(key);
+    if (control) value = Math.min(control.max, Math.max(control.min, value));
+    const prev = P[key];
+    showDrivenSetting(key, value);
+    if (Math.abs(P[key] - prev) > 1e-4) envFull = 2;
+  }
+  function updateRainClouds() {
+    const on = rainAmount() > 0.02;
+    if (on && !rainCloudManual && P.cloudMode !== 'dynamic') {
+      rainCloudManual = {};
+      for (const key of RAIN_CLOUDS) rainCloudManual[key] = P[key];
+    }
+    if (!on && rainCloudManual) {
+      const saved = rainCloudManual;
+      rainCloudManual = null;
+      if (P.cloudMode !== 'dynamic') {
+        for (const key of Object.keys(saved)) showDrivenSetting(key, saved[key]);
+      }
+      envFull = 2;
+    }
+    const dynamic = P.cloudMode === 'dynamic';
+    for (const key of RAIN_CLOUDS) setSettingLocked(key, on || dynamic);
+    if (!on) return;
+    const a = rainAmount();
+    const storm = P.rainStyle === 'thunderstorm' ? 1 : 0;
+    const hurr = P.rainStyle === 'hurricane' ? 1 : 0;
+    driveCloud('clouds', 0.78 + 0.18 * a + 0.03 * storm + 0.02 * hurr);
+    driveCloud('cloudAltitude', 1.25 - 0.55 * a - 0.15 * hurr);
+    driveCloud('cloudScale', 1.55 + 0.9 * a + 0.3 * hurr);
+    driveCloud('cloudDensity', 3.0 + 1.8 * a + 0.45 * storm + 0.7 * hurr);
+    driveCloud('veil', 0.55 + 0.3 * a + 0.08 * storm);
+    driveCloud('highCloudDensity', 1.05 + 0.55 * a);
+    driveCloud('cloudSoftness', 1.55 + 0.6 * a);
+    driveCloud('cloudSilver', 0.38 - 0.22 * a - 0.08 * storm);
+    driveCloud('cloudAmbient', 0.7 - 0.18 * a - 0.08 * storm);
+  }
+  function applyHurricaneState() {
+    const on = hurricaneOn();
+    if (on && !hurricaneManual) {
+      hurricaneManual = {};
+      for (const key of HURRICANE_OCEAN) hurricaneManual[key] = P[key];
+    }
+    if (!on && hurricaneManual) {
+      const saved = hurricaneManual;
+      hurricaneManual = null;
+      for (const key of Object.keys(saved)) showDrivenSetting(key, saved[key]);
+      needSpectrum = true;
+      needLUT = true;
+      envFull = 2;
+    }
+    for (const key of HURRICANE_OCEAN) setSettingLocked(key, on);
+    if (on) updateHurricaneSea();
+    updateRainClouds();
+  }
+  function rainFromObservation(obs) {
+    const code = Number(obs.code) || 0;
+    const chance = Math.max(0, Math.min(1, (Number(obs.chance) || 0) / 100));
+    let intensity = 0;
+    let style = 'rain';
+    if (code >= 95) {
+      style = 'thunderstorm';
+      intensity = 0.62 + 0.28 * chance;
+    } else if (code >= 80 && code <= 82) {
+      intensity = code >= 82 ? 0.8 : code === 81 ? 0.55 : 0.4;
+    } else if (code >= 61 && code <= 67) {
+      intensity = code >= 65 ? 0.74 : code >= 63 ? 0.5 : 0.34;
+    } else if (code >= 51 && code <= 57) {
+      intensity = code >= 55 ? 0.22 : 0.1;
+    } else if ((Number(obs.precipitation) || 0) > 0 || chance > 0.6) {
+      intensity = 0.12;
+    }
+    return { intensity: Math.min(1, intensity), style };
+  }
+  function raiseLightning(style) {
+    const floor = style === 'hurricane' ? 0.85 : style === 'thunderstorm' ? 0.55 : 0;
+    if (floor > P.rainLightning) showDrivenSetting('rainLightning', floor);
+  }
+  function updateFollowedRain() {
+    if (!(P.rain && P.rainFollow) || !weatherWidget) return;
+    const obs = weatherWidget.getObservation();
+    if (!obs) return;
+    const mapped = rainFromObservation(obs);
+    if (Math.abs(P.rainIntensity - mapped.intensity) > 0.02) showDrivenSetting('rainIntensity', mapped.intensity);
+    if (P.rainStyle !== mapped.style) {
+      showDrivenChoice('rainStyle', mapped.style);
+      raiseLightning(mapped.style);
+      applyHurricaneState();
+    }
+  }
+  function applyRainFollow() {
+    const follow = Boolean(P.rain && P.rainFollow);
+    if (follow && !rainManual) rainManual = { rainIntensity: P.rainIntensity, rainStyle: P.rainStyle };
+    if (!follow && rainManual) {
+      const saved = rainManual;
+      rainManual = null;
+      showDrivenSetting('rainIntensity', saved.rainIntensity);
+      showDrivenChoice('rainStyle', saved.rainStyle);
+    }
+    setSettingLocked('rainFollow', !P.rain);
+    setSettingLocked('rainIntensity', follow);
+    setSettingLocked('rainStyle', follow);
+    if (follow) updateFollowedRain();
+    applyHurricaneState();
   }
   function applySunControls() {
     const placed = skyUsesPlace();
@@ -5468,6 +6407,9 @@ async function main() {
         control.output.textContent = value ? control.onText : control.offText;
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
+      if (key === 'sound' || key === 'oceanPlayback' || key === 'rainPlayback') applySoundPlayback();
+      if (key === 'rain' || key === 'rainFollow') applyRainFollow();
+      if (key === 'rainFollow') applyWeather(true);
       if (key === 'showInfo' || key === 'showButtons') applyShowInfo();
       if (key.startsWith('clock') || key === 'compass' || key === 'compassTilt') applyClock();
       if (key.startsWith('weather')) applyWeather();
@@ -5487,6 +6429,10 @@ async function main() {
       if (key === 'skyMode') applySkyMode(true);
       if (key === 'cloudMode') applyCloudMode();
       if (key === 'starMode') applyStarMode();
+      if (key === 'rainStyle') {
+        if (!P.rainFollow) raiseLightning(value);
+        applyHurricaneState();
+      }
       if (key === 'skyLapseStart') resetTimeLapse();
       if (key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') resolveZipCode();
       if (key === 'skyMode' || key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') envFull = 2;
@@ -5502,6 +6448,10 @@ async function main() {
       control.output.textContent = control.input.value;
     }
     P[key] = value;
+    if (key === 'rainIntensity') {
+      showRainReadout();
+      updateRainClouds();
+    }
     const kind = control ? control.kind : (key === 'swellSpread' ? 'spec' : '');
     if (kind === 'spec') needSpectrum = true;
     if (kind === 'lut') needLUT = true;
@@ -5516,7 +6466,7 @@ async function main() {
       applyTiltAngle();
     }
     // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
-    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -5526,6 +6476,8 @@ async function main() {
     if (cloudManual && CLOUD_DRIVEN.includes(key)) cloudManual[key] = P[key];
     if (starManual && STAR_DRIVEN.includes(key)) starManual[key] = P[key];
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
+    if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) hurricaneManual[key] = P[key];
+    if (rainManual && Object.hasOwn(rainManual, key)) rainManual[key] = P[key];
     if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
     if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
     if (P.cloudMode === 'dynamic' && CLOUD_DRIVEN.includes(key)) updateDynamicClouds();
@@ -5573,6 +6525,9 @@ async function main() {
     cloudManual = null;
     starManual = null;
     moonManual = null;
+    hurricaneManual = null;
+    rainManual = null;
+    rainCloudManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
     headingExplicit = true;
@@ -5689,6 +6644,88 @@ async function main() {
     device.queue.writeBuffer(foamUBO, 0, foamUArr);
   }
 
+  function rainAmount() {
+    return P.rain ? Math.max(0, Math.min(1, P.rainIntensity)) : 0;
+  }
+  function updateLightning(dt) {
+    const amount = rainAmount();
+    const rate = amount > 0.02 ? Math.max(0, Math.min(1, P.rainLightning)) : 0;
+    if (boltLife > 0) {
+      boltLife -= dt;
+      const flick = Math.sin(boltLife * 78) > -0.15 ? 1 : 0.28;
+      boltFlash = Math.max(0, boltLife / boltDur) * flick * boltPower;
+      boltOn = boltFlash > 0.02 ? 1 : 0;
+    } else {
+      boltFlash = 0;
+      boltOn = 0;
+    }
+    if (rate < 0.01) return;
+    nextBolt -= dt;
+    if (nextBolt > 0) return;
+    const mean = Math.max(1.4, 18 * (1 - rate) + 1.5);
+    nextBolt = mean * (0.4 + Math.random() * 0.9);
+    const az = Math.random() * Math.PI * 2;
+    boltX = Math.cos(az);
+    boltZ = Math.sin(az);
+    boltSeed = Math.random() * 200;
+    boltDur = 0.14 + Math.random() * 0.2;
+    boltLife = boltDur;
+    boltPower = 0.65 + Math.random() * 0.55;
+    boltFlash = boltPower;
+    boltOn = 1;
+    oceanAudio.strike(az, 120 + Math.random() * 2400);
+  }
+  function writeRainUniforms(dt) {
+    const amount = rainAmount();
+    const style = P.rainStyle === 'hurricane' ? 2 : P.rainStyle === 'thunderstorm' ? 1 : 0;
+    const storm = style === 1 ? 1 : 0;
+    const hurr = style === 2 ? 1 : 0;
+    const ts = RAIN_MAP / RAIN_RES;
+    const ox = Math.round(cam.x / ts) * ts;
+    const oz = Math.round(cam.z / ts) * ts;
+    if (rainPrevX === null) { rainPrevX = ox; rainPrevZ = oz; }
+    const dir = P.windDir * D2R;
+    rainF[0] = cam.x; rainF[1] = cam.y; rainF[2] = cam.z; rainF[3] = simTime;
+    rainF[4] = Math.cos(dir); rainF[5] = Math.sin(dir); rainF[6] = P.windSpeed; rainF[7] = amount;
+    rainF[8] = P.rainRipples; rainF[9] = P.rainSplashes; rainF[10] = boltFlash; rainF[11] = style;
+    rainF[12] = boltX; rainF[13] = boltZ; rainF[14] = boltSeed; rainF[15] = boltOn;
+    rainActive = amount <= 0 ? 0 : Math.min(MAX_DROPS, Math.floor((500 + amount * amount * 11000) * (hurr ? 1.15 : 1)));
+    rainF[16] = RAIN_MAP; rainF[17] = dt; rainF[18] = rainActive;
+    rainF[19] = Math.min(1, 0.12 + amount * 0.42 + hurr * 0.5 + storm * 0.12);
+    rainF[20] = ox; rainF[21] = oz; rainF[22] = rainPrevX; rainF[23] = rainPrevZ;
+    rainF[24] = amount * (0.00008 + 0.00022 * storm + 0.0015 * hurr);
+    rainF[25] = amount > 0 ? Math.max(0.2, 1 - amount * (0.28 + 0.2 * storm + 0.38 * hurr)) : 1;
+    rainF[26] = Math.min(0.88, amount * (0.2 + 0.36 * storm + 0.48 * hurr));
+    rainF[27] = 0.3 + hurr * 0.9 + storm * 0.25;
+    rainF[28] = 6.2 + amount * 7.5 + hurr * 2.5;
+    rainF[29] = 16 + amount * 6;
+    rainF[30] = 12 + amount * 14;
+    rainF[31] = Math.min(0.55, 0.04 + P.rainSplashes * 0.12 + hurr * 0.08);
+    rainPrevX = ox;
+    rainPrevZ = oz;
+    device.queue.writeBuffer(rainUBO, 0, rainF);
+  }
+  function encodeRain(cp) {
+    if (!rainInited) {
+      cp.setPipeline(rainInitPipe);
+      cp.setBindGroup(0, bgRainInit);
+      cp.dispatchWorkgroups(Math.ceil(MAX_DROPS / 64));
+      rainInited = true;
+    }
+    if (rainActive > 0) {
+      cp.setPipeline(rainDropPipe);
+      cp.setBindGroup(0, bgRainDrop);
+      cp.dispatchWorkgroups(Math.ceil(rainActive / 64));
+    }
+    rainCur = 1 - rainCur;
+    cp.setPipeline(rainRipplePipe);
+    cp.setBindGroup(0, bgRainRipple[rainCur]);
+    cp.dispatchWorkgroups(RAIN_RES / 8, RAIN_RES / 8);
+    cp.setPipeline(rainClearPipe);
+    cp.setBindGroup(0, bgRainClear);
+    cp.dispatchWorkgroups(Math.ceil((RAIN_RES * RAIN_RES) / 256));
+  }
+
   function frame(now) {
     if (shooting) return;  // paused while a screenshot is read back
     requestAnimationFrame(frame);
@@ -5703,6 +6740,9 @@ async function main() {
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
     updateDynamicClouds(dt);
+    updateFollowedRain();
+    updateHurricaneSea();
+    updateRainClouds();
     updateDynamicStars();
     advanceTimeLapse(dt);
     if (fixedDt) dt = fixedDt;
@@ -5713,6 +6753,8 @@ async function main() {
     if (simTime > LOOP) simTime -= LOOP;
     frameIndex++;
     audioWaterH += (waterH - audioWaterH) * Math.min(1, dt * 12);
+    updateLightning(dt);
+    writeRainUniforms(dt);
     oceanAudio.update(simTime, audioWaterH, dt, cam, P);
 
     writeFrame(simTime);
@@ -5743,6 +6785,7 @@ async function main() {
       needLUT = false;
     }
     encodeSim(cp);
+    encodeRain(cp);
     cp.setPipeline(probePipe);
     cp.setBindGroup(0, bgProbe);
     cp.dispatchWorkgroups(1);
@@ -5768,7 +6811,7 @@ async function main() {
     const rp = enc.beginRenderPass(mainPass);
     if (nodeCount) {
       rp.setPipeline(oceanPipe);
-      rp.setBindGroup(0, bgOcean[foamCur]);
+      rp.setBindGroup(0, bgOcean[foamCur][rainCur]);
       rp.setVertexBuffer(0, instBuf);
       rp.setIndexBuffer(idxBuf, 'uint16');
       rp.drawIndexed(GRID * GRID * 6, nodeCount);
@@ -5776,6 +6819,16 @@ async function main() {
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
     rp.draw(3);
+    if (P.rain && P.rainIntensity > 0.004) {
+      if (rainActive > 0) {
+        rp.setPipeline(rainDrawPipe);
+        rp.setBindGroup(0, bgRainDraw);
+        rp.draw(rainActive * 6);
+      }
+      rp.setPipeline(rainMistPipe);
+      rp.setBindGroup(0, bgRainMist);
+      rp.draw(3);
+    }
     rp.end();
 
     for (let m = 0; m < BLOOM_LEVELS; m++) {

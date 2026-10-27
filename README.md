@@ -39,7 +39,7 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 | F1 or the Settings button | Open the settings panel |
 | Esc, H, or the × button | Close the settings panel |
 | H | Show or hide the settings panel |
-| M, the Sound button, or the Sound setting | Toggle procedural ocean audio |
+| M, the Sound button, or the Sound setting | Mute or unmute the ocean and the rain |
 
 The camera keeps itself above the displaced water surface, so waves never pass through it.
 
@@ -51,7 +51,7 @@ Sound and Settings sit together at the top right. They use the same surface as t
 
 ## Settings
 
-The panel is an accordion. The sections are **General**, **Clock**, **Weather**, **Ocean**, **Sound**, and **Sky**. Opening one closes the others, and the groups inside a section work the same way. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
+The panel is an accordion. The sections are **General**, **Sound**, **Clock**, **Compass**, **Weather**, **Ocean**, and **Sky**. Opening one closes the others, and the groups inside a section work the same way. Rain is a group inside Sky. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 
@@ -69,15 +69,19 @@ Wind, swell, and water. Wind speed, direction, and fetch shape the wind sea. Swe
 
 ### Sound
 
-![Sound playback, layer, and motion settings](docs/settings-sound.png)
+![Ocean and rain sound settings](docs/settings-sound.png)
 
-Ocean audio is generated in the browser with the Web Audio API, so there are no sound files to download. Low swell, surface wash, and crest hiss are mixed from filtered noise. Their levels follow the simulated water height under the camera. Wind, foam, camera altitude, and the volume setting shape the result.
+Sound starts off. **Playback** at the top of this section, the Sound button, and M all control the same setting, and the choice is saved. Off mutes the ocean and the rain together, collapses both groups, and disables them.
 
-Sound starts off. The Sound checkbox, the Sound button, and M all control the same setting, and the choice is saved.
+**Ocean** and **Rain** each have their own Playback switch. Off silences that mix and disables its sliders. The other mix keeps playing.
+
+**Ocean** is generated in the browser with the Web Audio API, so there are no sound files to download. Low swell, surface wash, and crest hiss are mixed from filtered noise. Their levels follow the simulated water height under the camera. Wind, foam, camera altitude, and the volume setting shape the result.
 
 - **Swell rumble**, **Surface wash**, and **Crest hiss** set the level of each layer.
 - **Wave sync** controls how strongly passing crests change the sound. At 1 the mix follows the water. At 0 it stays steady.
 - **Stereo width** controls how far the wind shifts the sound between the ears.
+
+**Rain** sets the rain bed, drop impacts, wind, thunder snap, and thunder rumble. Those levels stay in this section, separate from the ocean mix.
 
 ### Clock
 
@@ -98,6 +102,16 @@ A small timestamp at the bottom of the card shows when those conditions were las
 Active U.S. National Weather Service alerts appear above the card. The title stays put, and the statement scrolls through a few lines at a time so the full notice can be read. Severe and extreme alerts use a high-contrast red treatment. The settings panel stays above the weather card in every corner.
 
 Current conditions come from [Open-Meteo](https://open-meteo.com/). US ZIP codes, and postal codes written with a country, are resolved through [`api.zippopotam.us`](https://api.zippopotam.us/). Other places are resolved through the [Open-Meteo geocoding API](https://open-meteo.com/en/docs/geocoding-api). Alerts come from [`api.weather.gov`](https://api.weather.gov/) and appear for United States locations only. The weather location is separate from the sky location, and both default to 30265.
+
+### Rain
+
+Rain is a group inside Sky. It is off until you turn it on. Intensity runs from a few drops through drizzle, light, moderate, heavy, and violent rain. The streaks slant with the ocean wind. Near the camera, drops hit the water and leave a dent, a ring, and a short splash. Farther out, the rain thins into a mist toward the horizon, and the surface roughens so the glitter path widens.
+
+While rain is on, the clouds become a rain deck. Coverage closes into an overcast sheet, the base drops, and the layer grows broader, softer, and grayer as the rain gets heavier. Thunderstorms darken that deck further. Those cloud controls show the rain values and cannot be edited until rain is off, which restores the clouds you had before.
+
+**Thunderstorm** also raises the lightning rate. Lightning flashes the sky and the water together. Thunder follows, a crack and then a rumble, later when the bolt was farther away. **Hurricane** does that at the top of the scale: near-horizontal rain, spray, frequent lightning, wind, and a storm sea. While hurricane is on, wind speed, swell, chop, foam, and haze show the storm values and cannot be edited. Turning hurricane or rain off restores the values you had before.
+
+**Follow weather card** uses the current observation, and it is disabled while Rain is off. Drizzle, rain, and showers set the intensity. A thunderstorm code selects Thunderstorm. Hurricane stays a manual choice, so turn Follow off to select it. Rain, drop, wind, and thunder levels are in the Sound section. The Sound control still mutes everything.
 
 ### Sky
 
@@ -149,6 +163,7 @@ The surface mesh is a CDLOD quadtree with 17 levels. Vertices are 6.25 cm apart 
 - The sky reflection comes from an environment cube map rebuilt every frame, with roughness-filtered mips. At grazing angles the reflection direction is tilted to account for which wave facets the viewer can actually see.
 - The water body is turbid blue-green, lit by the whole sky hemisphere. Backlit crests get a subsurface glow, and wind-gust patches modulate the short ripples.
 - Whitecaps start where the total surface Jacobian folds. Foam is stored in two camera-centred world-space maps (128 m and 1 km wide), decays over time, drifts downwind, and breaks into streaks as it ages. A procedural bubble texture gives it its structure.
+- Rain keeps a 40 m ripple map centred on the camera. Drops stamp a dent into a damped wave field, which propagates into rings, and a short splash channel lights the crown. A procedural ripple normal continues the pattern past the edge of that map.
 
 ### Sky
 

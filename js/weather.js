@@ -102,7 +102,7 @@ function playAlertScroll(root) {
   viewport.classList.add('scrolling');
 }
 
-export function createWeatherWidget(root, status) {
+export function createWeatherWidget(root, status, onObservation) {
   let timer = 0;
   let request = 0;
   let controller = null;
@@ -169,7 +169,7 @@ export function createWeatherWidget(root, status) {
   }
 
   async function refresh(config) {
-    if (!config.weather) return;
+    if (!config.weather && !config.rainFollow) return;
     const token = ++request;
     controller?.abort();
     controller = new AbortController();
@@ -222,6 +222,7 @@ export function createWeatherWidget(root, status) {
         daily: todayTemperatures(weather.daily, weather.current?.time),
         updatedAt: now,
       };
+      onObservation?.(liveObservation());
       status(`${location.name || location.query} weather updated`);
       render(config);
     } catch (error) {
@@ -232,16 +233,25 @@ export function createWeatherWidget(root, status) {
     }
   }
 
+  function liveObservation() {
+    if (!data?.current || data.error) return null;
+    return {
+      code: data.current.weather_code,
+      precipitation: data.current.precipitation,
+      chance: data.hourly?.chances?.[0] ?? 0,
+    };
+  }
+
   function update(config, fetchNow = false) {
     lastConfig = { ...config };
     render(lastConfig);
     clearInterval(timer);
     clearTimeout(fetchDelay);
-    if (config.weather) {
+    if (config.weather || config.rainFollow) {
       timer = setInterval(() => refresh(lastConfig), Math.max(1, config.weatherRefresh) * 60000);
       if (fetchNow || !data) fetchDelay = setTimeout(() => refresh(lastConfig), 50);
     }
   }
 
-  return { update, refresh: () => lastConfig && refresh(lastConfig) };
+  return { update, refresh: () => lastConfig && refresh(lastConfig), getObservation: liveObservation };
 }

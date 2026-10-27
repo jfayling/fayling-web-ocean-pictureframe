@@ -70,7 +70,18 @@ export function createOceanAudio(button, onChange) {
   let rumble = null;
   let wash = null;
   let hiss = null;
+  let rainBus = null;
+  let rainBed = null;
+  let rainRoar = null;
+  let rainTick = null;
+  let rainWind = null;
+  let thunderGain = null;
+  let crackBuffer = null;
+  let rumbleBuffer = null;
+  const thunderQueue = [];
   let enabled = false;
+  let oceanAudible = true;
+  let rainAudible = true;
   let lastHeight = 0;
   let heightReady = false;
   let waveVelocity = 0;
@@ -117,6 +128,27 @@ export function createOceanAudio(button, onChange) {
     hiss.gain.connect(pan);
     pan.connect(master);
     master.connect(compressor);
+
+    rainBus = ctx.createGain();
+    rainBus.gain.value = 0;
+    const rainPink = noiseBuffer(ctx, 7.7, 'pink', 0x5a11);
+    const rainBrown = noiseBuffer(ctx, 9.1, 'brown', 0x71de);
+    const rainWhite = noiseBuffer(ctx, 5.3, 'white', 0x2c0d);
+    rainBed = makeLayer(ctx, rainPink, [['highpass', 700], ['lowpass', 5400]]);
+    rainRoar = makeLayer(ctx, rainBrown, [['highpass', 90], ['lowpass', 520]]);
+    rainTick = makeLayer(ctx, rainWhite, [['highpass', 1800], ['lowpass', 7600]]);
+    rainWind = makeLayer(ctx, rainBrown, [['lowpass', 240]]);
+    rainBed.gain.connect(rainBus);
+    rainRoar.gain.connect(rainBus);
+    rainTick.gain.connect(rainBus);
+    rainWind.gain.connect(rainBus);
+    thunderGain = ctx.createGain();
+    thunderGain.gain.value = 0.9;
+    thunderGain.connect(compressor);
+    rainBus.connect(compressor);
+    crackBuffer = noiseBuffer(ctx, 2.0, 'pink', 0xabc1);
+    rumbleBuffer = noiseBuffer(ctx, 5.5, 'brown', 0x44e2);
+
     compressor.connect(ctx.destination);
     return true;
   }
@@ -140,9 +172,12 @@ export function createOceanAudio(button, onChange) {
 
     if (enabled) {
       await ctx.resume();
+      thunderGain?.gain.setTargetAtTime(0.9, ctx.currentTime, 0.1);
     } else {
       const token = suspendToken;
       master.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+      rainBus?.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+      thunderGain?.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
       setTimeout(() => {
         if (!enabled && token === suspendToken && ctx.state === 'running') ctx.suspend();
       }, 450);
@@ -172,6 +207,8 @@ export function createOceanAudio(button, onChange) {
     const breaking = clamp(crest * (0.35 + rising * 0.65) * params.foam * sync);
     const altitude = Math.max(0, camera.y - waterHeight);
     const distanceFade = 1 / (1 + Math.max(0, altitude - 3) / 85);
+    oceanAudible = params.oceanPlayback !== false;
+    rainAudible = params.rainPlayback !== false;
     const volume = clamp(params.audioVolume, 0, 1) * distanceFade;
     const rumbleLevel = clamp(params.audioRumble ?? 1, 0, 2);
     const washLevel = clamp(params.audioWash ?? 1, 0, 2);
@@ -179,7 +216,7 @@ export function createOceanAudio(button, onChange) {
     const stereo = clamp(params.audioStereo ?? 1, 0, 2);
     const now = ctx.currentTime;
 
-    master.gain.setTargetAtTime(volume * 0.36, now, 0.12);
+    master.gain.setTargetAtTime(oceanAudible ? volume * 0.36 : 0, now, 0.12);
     rumble.gain.gain.setTargetAtTime((0.16 + surge * 0.22 + wind * 0.08) * rumbleLevel, now, 0.22);
     wash.gain.gain.setTargetAtTime((0.20 + surge * 0.28 + breaking * 0.24) * washLevel, now, 0.10);
     hiss.gain.gain.setTargetAtTime((0.025 + wind * 0.10 + breaking * 0.22) * hissLevel, now, 0.07);
@@ -188,6 +225,145 @@ export function createOceanAudio(button, onChange) {
 
     const windAngle = params.windDir * Math.PI / 180 - camera.yaw;
     pan.pan.setTargetAtTime(Math.sin(windAngle) * 0.28 * stereo, now, 0.3);
+    updateRain(now, sampleDt, camera, params);
+  }
+
+  function updateRain(now, dt, camera, params) {
+    if (!rainBus) return;
+    if (!rainAudible) {
+      rainBus.gain.setTargetAtTime(0, now, 0.12);
+      thunderGain?.gain.setTargetAtTime(0, now, 0.08);
+      thunderQueue.length = 0;
+      return;
+    }
+    thunderGain?.gain.setTargetAtTime(0.9, now, 0.1);
+    const intensity = params.rain ? clamp(params.rainIntensity, 0, 1) : 0;
+    const style = params.rainStyle || 'rain';
+    const storm = style === 'thunderstorm' ? 1 : 0;
+    const hurricane = style === 'hurricane' ? 1 : 0;
+    const volume = clamp(params.rainVolume ?? 0.8, 0, 1);
+    const drops = clamp(params.rainDrops ?? 1, 0, 2);
+    const windLevel = clamp(params.rainWind ?? 1, 0, 2);
+    const audible = intensity * volume;
+    rainBus.gain.setTargetAtTime(audible * 0.85, now, 0.18);
+    rainBed.gain.gain.setTargetAtTime((0.04 + intensity * 0.22) * (1.1 - hurricane * 0.25), now, 0.2);
+    rainRoar.gain.gain.setTargetAtTime(intensity * intensity * (0.08 + storm * 0.08 + hurricane * 0.16), now, 0.25);
+    const tick = (0.015 + (1 - intensity) * intensity * 0.12) * drops;
+    if (tick > 0.02 && Math.random() < dt * (3 + intensity * 46) * drops) {
+      const hit = 0.05 + Math.random() * 0.16 * (0.4 + intensity);
+      rainTick.gain.gain.setValueAtTime(Math.max(hit, 0.0008), now);
+      rainTick.gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.045 + Math.random() * 0.03);
+    } else {
+      rainTick.gain.gain.setTargetAtTime(0.008 + intensity * 0.05 * drops, now, 0.08);
+    }
+    const gust = 0.75 + 0.25 * Math.sin(now * (0.35 + hurricane * 0.4));
+    const windAmt = intensity * (0.04 + storm * 0.12 + hurricane * 0.55) * windLevel * gust;
+    rainWind.gain.gain.setTargetAtTime(windAmt, now, 0.3);
+    rainWind.tail.frequency.setTargetAtTime(140 + hurricane * 90 + gust * 40, now, 0.4);
+    flushThunder(now, camera, params);
+  }
+
+  function strike(azimuth, distance) {
+    if (!ctx || !enabled || !rainAudible) return;
+    const delay = clamp(distance, 40, 2800) / 343;
+    thunderQueue.push({ azimuth, distance: clamp(distance, 40, 2800), at: ctx.currentTime + delay });
+  }
+
+  function flushThunder(now, camera, params) {
+    const snap = clamp(params.rainSnap ?? 0.9, 0, 2);
+    const rumbleLevel = clamp(params.rainRumble ?? 0.9, 0, 2);
+    if (snap <= 0.001 && rumbleLevel <= 0.001) {
+      thunderQueue.length = 0;
+      return;
+    }
+    for (let i = thunderQueue.length - 1; i >= 0; i--) {
+      const bolt = thunderQueue[i];
+      if (now + 0.03 < bolt.at) continue;
+      thunderQueue.splice(i, 1);
+      playThunder(now, bolt, camera.yaw, snap, rumbleLevel);
+    }
+  }
+
+  // A real crack is a shock, not a click. The channel arrives as a few tearing
+  // bursts, each falling from a bright edge down into a low body, and then the rumble.
+  function playCrack(now, near, snap, output) {
+    if (snap <= 0.001) return;
+    const rips = 1 + Math.round(near * 5);
+    let cursor = 0;
+    for (let i = 0; i < rips; i++) {
+      if (i > 0) cursor += 0.016 + Math.random() * 0.05;
+      const when = now + cursor;
+      const src = ctx.createBufferSource();
+      src.buffer = crackBuffer;
+      const offset = Math.random() * Math.max(0, crackBuffer.duration - 0.45);
+      src.playbackRate.value = 0.82 + Math.random() * 0.46;
+      const sweep = ctx.createBiquadFilter();
+      sweep.type = 'lowpass';
+      sweep.Q.value = i === 0 ? 0.65 : 0.85 + Math.random() * 0.35;
+      const bright = i === 0 ? 1400 + near * 2400 : 420 + near * 1100;
+      const startHz = bright * (0.78 + Math.random() * 0.35);
+      const endHz = Math.max(48, 80 + near * 50 + Math.random() * 30);
+      const sweepTime = (i === 0 ? 0.085 : 0.04 + Math.random() * 0.045) + (1 - near) * 0.05;
+      sweep.frequency.setValueAtTime(startHz, when);
+      sweep.frequency.exponentialRampToValueAtTime(endHz, when + sweepTime);
+      const gain = ctx.createGain();
+      const falloff = i === 0 ? 1 : 0.42 * Math.pow(0.78, i - 1);
+      const amp = snap * (0.22 + near * 0.34) * falloff;
+      const dur = sweepTime + 0.04 + (1 - near) * 0.07;
+      gain.gain.setValueAtTime(Math.max(0.001, amp), when);
+      gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+      src.connect(sweep);
+      sweep.connect(gain);
+      gain.connect(output);
+      src.start(when, offset);
+      src.stop(when + dur + 0.04);
+    }
+
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(70 + near * 80, now);
+    body.frequency.exponentialRampToValueAtTime(36, now + 0.16);
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(Math.max(0.001, snap * (0.08 + near * 0.2)), now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    body.connect(bodyGain);
+    bodyGain.connect(output);
+    body.start(now);
+    body.stop(now + 0.22);
+  }
+
+  function playThunder(now, bolt, yaw, snap, rumbleLevel) {
+    const near = 1 / (1 + bolt.distance / 700);
+    const panNode = ctx.createStereoPanner();
+    panNode.pan.value = clamp(Math.sin(bolt.azimuth - yaw) * 0.85, -1, 1);
+    panNode.connect(thunderGain);
+
+    const crackOut = ctx.createGain();
+    const distance = ctx.createBiquadFilter();
+    distance.type = 'lowpass';
+    distance.frequency.value = 450 + near * 5000;
+    distance.Q.value = 0.4;
+    crackOut.connect(distance);
+    distance.connect(panNode);
+    playCrack(now, near, snap, crackOut);
+
+    if (rumbleLevel <= 0.001) return;
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = rumbleBuffer;
+    rumble.loop = true;
+    const rumbleGain = ctx.createGain();
+    const rumbleFilter = ctx.createBiquadFilter();
+    rumbleFilter.type = 'lowpass';
+    rumbleFilter.frequency.value = 90 + near * 180;
+    const rumbleAmp = Math.max(0.001, (0.2 + (1 - near) * 0.35 + near * 0.25) * rumbleLevel);
+    rumbleGain.gain.setValueAtTime(0.001, now);
+    rumbleGain.gain.exponentialRampToValueAtTime(rumbleAmp, now + 0.25 + (1 - near) * 0.45);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + 2.2 + (1 - near) * 3.2);
+    rumble.connect(rumbleFilter);
+    rumbleFilter.connect(rumbleGain);
+    rumbleGain.connect(panNode);
+    rumble.start(now);
+    rumble.stop(now + 6);
   }
 
   if (button) button.addEventListener('click', (event) => {
@@ -200,5 +376,6 @@ export function createOceanAudio(button, onChange) {
     toggle: () => setEnabled(!enabled),
     setEnabled,
     update,
+    strike,
   };
 }

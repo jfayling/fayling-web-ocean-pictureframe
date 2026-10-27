@@ -6,6 +6,7 @@ import { N, CASCADES, SKY_W, SKY_H, ENV_SIZE, ENV_MIPS } from './wgsl/common.js'
 import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIPS, FOAM_UPDATE, ARRAY16_MIPS, FOAM_RES } from './wgsl/sim.js';
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
+import { RAIN_DROP_INIT, RAIN_DROP_UPDATE, RAIN_RIPPLE, RAIN_CLEAR, RAIN_DRAW, RAIN_MIST, RAIN_RES, RAIN_MAP, MAX_DROPS } from './wgsl/rain.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
 import { createOceanAudio } from './audio.js';
 import { celestialState } from './astronomy.js';
@@ -81,6 +82,8 @@ export const P = {
   audioSync: 1,
   audioStereo: 1,
   sound: false,
+  oceanPlayback: true,
+  rainPlayback: true,
   showButtons: true,
   showInfo: false,
   clock: true,
@@ -110,6 +113,18 @@ export const P = {
   weatherWind: true,
   weatherForecast: true,
   weatherAlerts: true,
+  rain: false,
+  rainIntensity: 0.5,
+  rainStyle: 'rain',
+  rainFollow: false,
+  rainRipples: 1,
+  rainSplashes: 1,
+  rainLightning: 0,
+  rainVolume: 0.8,
+  rainDrops: 1,
+  rainWind: 1,
+  rainSnap: 0.9,
+  rainRumble: 0.9,
 };
 const DEFAULTS = { ...P };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
@@ -157,6 +172,7 @@ async function main() {
   const oceanAudio = createOceanAudio(document.getElementById('sound'), (on) => {
     P.sound = on;
     rememberSettings();
+    applySoundPlayback();
     if (!soundControl) return;
     soundControl.input.checked = on;
     soundControl.output.textContent = on ? 'On' : 'Off';
@@ -389,10 +405,68 @@ async function main() {
     fragment: { module: compMod, entryPoint: 'fs', targets: [{ format: swapFormat }] },
   });
 
-  const bgOcean = [0, 1].map((i) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
+  const rainF = new Float32Array(32);
+  const rainUBO = mkBuf(128, GU.UNIFORM | GU.COPY_DST, 'rain ubo');
+  const stampBytes = RAIN_RES * RAIN_RES * 4;
+  const dentBuf = mkBuf(stampBytes, GU.STORAGE, 'rain dent');
+  const splashBuf = mkBuf(stampBytes, GU.STORAGE, 'rain splash');
+  const dropBuf = mkBuf(MAX_DROPS * 32, GU.STORAGE, 'rain drops');
+  const rainTex = [0, 1].map((i) => device.createTexture({
+    label: 'rain ripple ' + i, size: [RAIN_RES, RAIN_RES], format: 'rgba16float',
+    usage: TU.TEXTURE_BINDING | TU.STORAGE_BINDING,
+  }));
+  const rainSamp = device.createSampler({
+    magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
+  });
+  const PREMUL = {
+    color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  };
+  const [rainInitPipe, rainDropPipe, rainRipplePipe, rainClearPipe, rainDrawMod, rainMistMod] = await Promise.all([
+    computePipe(RAIN_DROP_INIT, 'rain init'),
+    computePipe(RAIN_DROP_UPDATE, 'rain drops'),
+    computePipe(RAIN_RIPPLE, 'rain ripple'),
+    computePipe(RAIN_CLEAR, 'rain clear'),
+    shader(RAIN_DRAW, 'rain draw'),
+    shader(RAIN_MIST, 'rain mist'),
+  ]);
+  const rainDepth = { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'greater' };
+  const rainDrawPipe = await device.createRenderPipelineAsync({
+    label: 'rain draw', layout: 'auto',
+    vertex: { module: rainDrawMod, entryPoint: 'vs' },
+    fragment: { module: rainDrawMod, entryPoint: 'fs', targets: [{ format: HDR, blend: PREMUL }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: rainDepth,
+    multisample: { count: MSAA },
+  });
+  const rainMistPipe = await device.createRenderPipelineAsync({
+    label: 'rain mist', layout: 'auto',
+    vertex: { module: rainMistMod, entryPoint: 'vs' },
+    fragment: { module: rainMistMod, entryPoint: 'fs', targets: [{ format: HDR, blend: PREMUL }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'always' },
+    multisample: { count: MSAA },
+  });
+  const bgRainInit = bg(rainInitPipe, [{ buffer: rainUBO }, { buffer: dropBuf }], 'rain init');
+  const bgRainDrop = bg(rainDropPipe, [{ buffer: rainUBO }, { buffer: frameUBO }, { buffer: dropBuf },
+    { buffer: dentBuf }, { buffer: splashBuf }, fullArr(dispTex), samplerSim], 'rain drop');
+  const bgRainRipple = [0, 1].map((i) => bg(rainRipplePipe, [{ buffer: rainUBO }, rainTex[1 - i].createView(),
+    rainTex[i].createView(), { buffer: dentBuf }, { buffer: splashBuf }], 'rain ripple ' + i));
+  const bgRainClear = bg(rainClearPipe, [{ buffer: dentBuf }, { buffer: splashBuf }], 'rain clear');
+  const bgRainDraw = bg(rainDrawPipe, [{ buffer: frameUBO }, { buffer: rainUBO }, { buffer: dropBuf }], 'rain draw');
+  const bgRainMist = bg(rainMistPipe, [{ buffer: frameUBO }, { buffer: rainUBO }], 'rain mist');
+  let rainCur = 0;
+  let rainInited = false;
+  let rainActive = 0;
+  let rainPrevX = null;
+  let rainPrevZ = null;
+  let boltFlash = 0, boltX = 1, boltZ = 0, boltSeed = 1, boltOn = 0;
+  let boltLife = 0, boltDur = 0.2, boltPower = 1, nextBolt = 2.5;
+
+  const bgOcean = [0, 1].map((i) => [0, 1].map((r) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
-    fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
-  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView], 'sky');
+    fullArr(foamW[i]), { buffer: sunVisBuf }, { buffer: rainUBO }, rainTex[r].createView(), rainSamp], 'ocean' + i + r)));
+  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView, { buffer: rainUBO }], 'sky');
 
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
@@ -883,6 +957,7 @@ async function main() {
       control.input.value = text;
       control.output.textContent = text;
     }
+    if (key === 'rainIntensity') showRainReadout();
   }
   function updateDynamicClouds() {
     if (P.cloudMode !== 'dynamic') return;
@@ -906,23 +981,27 @@ async function main() {
     const lowDir = (225 + 65 * wave(121, 0.4) + 25 * wave(43, -1.2) + 360) % 360;
     const lowWind = 3 + 10 * front + 4 * (0.5 + 0.5 * wave(31, 2.3));
     const lowSun = Math.exp(-((elev - 6) ** 2) / 180) * weatherSmooth(-3, 4, elev);
+    const showWeatherCloud = (key, value) => {
+      if (rainAmount() > 0.02 && RAIN_CLOUDS.includes(key)) return;
+      showDrivenSetting(key, value);
+    };
     showDrivenSetting('cloudMotion', true);
-    showDrivenSetting('clouds', Math.min(0.92, 0.04 + 0.72 * moisture + 0.16 * convection * (1 - 0.55 * moisture)));
-    showDrivenSetting('cloudAltitude', 0.75 + 1.8 * (1 - moisture) + 0.35 * convection);
-    showDrivenSetting('cloudScale', 0.75 + 0.65 * (1 - moisture) + 0.25 * convection);
-    showDrivenSetting('cloudDensity', 0.8 + 3.4 * moisture + 0.5 * convection);
-    showDrivenSetting('cloudWindSpeed', lowWind);
-    showDrivenSetting('cloudWindDir', lowDir);
-    showDrivenSetting('cloudEvolution', 0.15 + 0.65 * Math.min(1, lowWind / 18) + 0.35 * convection);
-    showDrivenSetting('veil', Math.min(0.82, 0.03 + 0.55 * (0.55 * front + 0.45 * moisture)));
-    showDrivenSetting('highCloudAltitude', 7 + 3 * (1 - front));
-    showDrivenSetting('highCloudScale', 0.75 + 0.7 * (1 - front));
-    showDrivenSetting('highCloudDensity', 0.3 + 1.25 * (0.55 * front + 0.45 * moisture));
-    showDrivenSetting('highCloudWindSpeed', 18 + 25 * front + 8 * (0.5 + 0.5 * wave(53, 0.7)));
-    showDrivenSetting('highCloudWindDir', (lowDir + 24 + 16 * wave(83, 2.5) + 360) % 360);
-    showDrivenSetting('cloudSoftness', 0.75 + 0.55 * moisture + 0.15 * (1 - daylight));
-    showDrivenSetting('cloudSilver', 0.15 + 1.55 * lowSun);
-    showDrivenSetting('cloudAmbient', 0.85 + 0.4 * daylight);
+    showWeatherCloud('clouds', Math.min(0.92, 0.04 + 0.72 * moisture + 0.16 * convection * (1 - 0.55 * moisture)));
+    showWeatherCloud('cloudAltitude', 0.75 + 1.8 * (1 - moisture) + 0.35 * convection);
+    showWeatherCloud('cloudScale', 0.75 + 0.65 * (1 - moisture) + 0.25 * convection);
+    showWeatherCloud('cloudDensity', 0.8 + 3.4 * moisture + 0.5 * convection);
+    showWeatherCloud('cloudWindSpeed', lowWind);
+    showWeatherCloud('cloudWindDir', lowDir);
+    showWeatherCloud('cloudEvolution', 0.15 + 0.65 * Math.min(1, lowWind / 18) + 0.35 * convection);
+    showWeatherCloud('veil', Math.min(0.82, 0.03 + 0.55 * (0.55 * front + 0.45 * moisture)));
+    showWeatherCloud('highCloudAltitude', 7 + 3 * (1 - front));
+    showWeatherCloud('highCloudScale', 0.75 + 0.7 * (1 - front));
+    showWeatherCloud('highCloudDensity', 0.3 + 1.25 * (0.55 * front + 0.45 * moisture));
+    showWeatherCloud('highCloudWindSpeed', 18 + 25 * front + 8 * (0.5 + 0.5 * wave(53, 0.7)));
+    showWeatherCloud('highCloudWindDir', (lowDir + 24 + 16 * wave(83, 2.5) + 360) % 360);
+    showWeatherCloud('cloudSoftness', 0.75 + 0.55 * moisture + 0.15 * (1 - daylight));
+    showWeatherCloud('cloudSilver', 0.15 + 1.55 * lowSun);
+    showWeatherCloud('cloudAmbient', 0.85 + 0.4 * daylight);
   }
   function updateDynamicStars() {
     if (P.starMode !== 'dynamic') return;
@@ -1042,12 +1121,13 @@ async function main() {
     setPanelOpen(false);
   });
   const panelBody = document.getElementById('panel-body');
-  const BOOL_KEYS = new Set(['sound', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+  const BOOL_KEYS = new Set(['sound', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
     'compass', 'compassTilt',
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
+    'rain', 'rainFollow',
     'moon', 'stars', 'cloudMotion']);
   const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
-    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode']);
+    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode', 'rainStyle']);
   const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
     'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
@@ -1061,6 +1141,16 @@ async function main() {
   let cloudManual = null;
   let starManual = null;
   let moonManual = null;
+  let hurricaneManual = null;
+  let rainManual = null;
+  let rainCloudManual = null;
+  const HURRICANE_OCEAN = ['windSpeed', 'swellHs', 'choppy', 'foam', 'haze'];
+  // A raining sky is a nimbostratus deck: low, broad, soft, and gray, with the
+  // upper sheet closed so fair-weather blue does not show through the gaps.
+  const RAIN_CLOUDS = [
+    'clouds', 'cloudAltitude', 'cloudScale', 'cloudDensity',
+    'veil', 'highCloudDensity', 'cloudSoftness', 'cloudSilver', 'cloudAmbient',
+  ];
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
   // Time lapse advances the sun, moon, and stars by `lapsePace` sky minutes per real
@@ -1099,6 +1189,28 @@ async function main() {
       { settings: [
         ['showButtons', 'Onscreen buttons', 'toggle', 'Show', 'Hide'],
         ['showInfo', 'Onscreen information', 'toggle', 'Show', 'Hide'],
+      ] },
+    ] },
+    { title: 'Sound', groups: [
+      { settings: [
+        ['sound', 'Playback', 'toggle', 'On', 'Off'],
+      ] },
+      { title: 'Ocean', settings: [
+        ['oceanPlayback', 'Playback', 'toggle', 'On', 'Off'],
+        ['audioVolume', 'Volume', 0, 1, 0.01, 'audio'],
+        ['audioRumble', 'Swell rumble', 0, 2, 0.01, 'audio'],
+        ['audioWash', 'Surface wash', 0, 2, 0.01, 'audio'],
+        ['audioHiss', 'Crest hiss', 0, 2, 0.01, 'audio'],
+        ['audioSync', 'Wave sync', 0, 2, 0.01, 'audio'],
+        ['audioStereo', 'Stereo width', 0, 2, 0.01, 'audio'],
+      ] },
+      { title: 'Rain', settings: [
+        ['rainPlayback', 'Playback', 'toggle', 'On', 'Off'],
+        ['rainVolume', 'Volume', 0, 1, 0.01, 'rain'],
+        ['rainDrops', 'Drop impacts', 0, 2, 0.01, 'rain'],
+        ['rainWind', 'Wind', 0, 2, 0.01, 'rain'],
+        ['rainSnap', 'Thunder snap', 0, 2, 0.01, 'rain'],
+        ['rainRumble', 'Thunder rumble', 0, 2, 0.01, 'rain'],
       ] },
     ] },
     { title: 'Clock', groups: [
@@ -1183,21 +1295,6 @@ async function main() {
         ['foam', 'Foam', 0, 3, 0.01, ''],
       ] },
     ] },
-    { title: 'Sound', groups: [
-      { title: 'Playback', settings: [
-        ['sound', 'Sound', 'toggle', 'On', 'Off'],
-        ['audioVolume', 'Volume', 0, 1, 0.01, 'audio'],
-      ] },
-      { title: 'Layers', settings: [
-        ['audioRumble', 'Swell rumble', 0, 2, 0.01, 'audio'],
-        ['audioWash', 'Surface wash', 0, 2, 0.01, 'audio'],
-        ['audioHiss', 'Crest hiss', 0, 2, 0.01, 'audio'],
-      ] },
-      { title: 'Motion', settings: [
-        ['audioSync', 'Wave sync', 0, 2, 0.01, 'audio'],
-        ['audioStereo', 'Stereo width', 0, 2, 0.01, 'audio'],
-      ] },
-    ] },
     { title: 'Sky', groups: [
       { title: 'Mode', settings: [
         ['skyMode', 'Sky behavior', 'select', [
@@ -1277,6 +1374,25 @@ async function main() {
         ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
         ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
       ] },
+      { title: 'Rain', groups: [
+        { title: 'Weather', settings: [
+          ['rain', 'Rain', 'toggle', 'On', 'Off'],
+          ['rainIntensity', 'Intensity', 0, 1, 0.01, 'rain'],
+          ['rainStyle', 'Style', 'select', [
+            ['rain', 'Rain'],
+            ['thunderstorm', 'Thunderstorm'],
+            ['hurricane', 'Hurricane'],
+          ]],
+          ['rainFollow', 'Follow weather card', 'toggle', 'On', 'Off'],
+        ] },
+        { title: 'Surface', settings: [
+          ['rainRipples', 'Ripples', 0, 2, 0.01, 'rain'],
+          ['rainSplashes', 'Splashes', 0, 2, 0.01, 'rain'],
+        ] },
+        { title: 'Storm', settings: [
+          ['rainLightning', 'Lightning', 0, 1, 0.01, 'rain'],
+        ] },
+      ] },
     ] },
   ];
   const RANGES = new Map();
@@ -1310,10 +1426,18 @@ async function main() {
     const range = RANGES.get(key);
     return range ? Math.min(range[1], Math.max(range[0], n)) : n;
   }
+  function migrateThunder(data) {
+    if (!data || typeof data !== 'object' || !Object.hasOwn(data, 'rainThunder')) return;
+    const value = coerceSetting('rainSnap', data.rainThunder);
+    if (value === undefined) return;
+    if (!Object.hasOwn(data, 'rainSnap')) data.rainSnap = value;
+    if (!Object.hasOwn(data, 'rainRumble')) data.rainRumble = value;
+  }
   function restoreSettings() {
     let data = null;
     try { data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch { /* unavailable */ }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+    migrateThunder(data);
     for (const key of Object.keys(P)) {
       if (!Object.hasOwn(data, key)) continue;
       const value = coerceSetting(key, data[key]);
@@ -1329,9 +1453,12 @@ async function main() {
   const visitOnly = new Set();
   function storedSettingValue(key) {
     if (sunManual && SUN_DRIVEN.includes(key)) return sunManual[key];
+    if (rainCloudManual && Object.hasOwn(rainCloudManual, key)) return rainCloudManual[key];
+    if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) return hurricaneManual[key];
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
     if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
     if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    if (rainManual && Object.hasOwn(rainManual, key)) return rainManual[key];
     return P[key];
   }
   function settingsSnapshot() {
@@ -1386,6 +1513,7 @@ async function main() {
     if (!shared) sharedSettingsFailed = true;
     else {
       for (const key of Object.keys(DEFAULTS)) P[key] = DEFAULTS[key];
+      migrateThunder(shared);
       for (const key of Object.keys(shared)) {
         if (!Object.hasOwn(P, key)) continue;
         const value = coerceSetting(key, shared[key]);
@@ -1396,6 +1524,10 @@ async function main() {
         }
       }
     }
+  }
+  if (qs.has('rainThunder') && !qs.has('rainSnap') && !qs.has('rainRumble')) {
+    const thunder = coerceSetting('rainSnap', qs.get('rainThunder'));
+    if (thunder !== undefined) P.rainSnap = P.rainRumble = thunder;
   }
   for (const key of Object.keys(P)) {
     if (!qs.has(key)) continue;
@@ -1878,6 +2010,7 @@ async function main() {
   setInterval(updateClock, 250);
   setInterval(refreshDynamicSky, 30000);
   if (P.sound) oceanAudio.setEnabled(true);
+  applySoundPlayback();
 
   const io = document.createElement('div');
   io.className = 'io';
@@ -1922,7 +2055,7 @@ async function main() {
     const token = ++statusToken;
     setTimeout(() => { if (token === statusToken) status.textContent = ''; }, 4000);
   }
-  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note);
+  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note, () => updateFollowedRain());
   document.getElementById('weather-widget').addEventListener('click', (event) => {
     if (event.target.closest('.weather-place')) openPlaceDialog('weatherZip');
   });
@@ -1931,6 +2064,8 @@ async function main() {
     layoutCompass();
   }
   applyWeather(true);
+  applyRainFollow();
+  showRainReadout();
   addEventListener('resize', layoutCompass);
   const overlayLayout = new ResizeObserver(() => layoutCompass());
   for (const id of ['clock-widget', 'toolbar', 'hud', 'weather-widget']) overlayLayout.observe(document.getElementById(id));
@@ -1939,7 +2074,11 @@ async function main() {
     const dynamic = P.cloudMode === 'dynamic';
     if (dynamic && !cloudManual) {
       cloudManual = {};
-      for (const key of CLOUD_DRIVEN) cloudManual[key] = P[key];
+      for (const key of CLOUD_DRIVEN) {
+        cloudManual[key] = rainCloudManual && Object.hasOwn(rainCloudManual, key) ? rainCloudManual[key]
+          : hurricaneManual && Object.hasOwn(hurricaneManual, key) ? hurricaneManual[key]
+            : P[key];
+      }
     }
     if (!dynamic && cloudManual) {
       for (const key of CLOUD_DRIVEN) showDrivenSetting(key, cloudManual[key]);
@@ -1948,6 +2087,7 @@ async function main() {
     for (const key of CLOUD_DRIVEN) setSettingLocked(key, dynamic);
     refreshModeGroups();
     if (dynamic) updateDynamicClouds(0);
+    applyHurricaneState();
   }
   function refreshStarControls() {
     const day = P.skyMode === 'day';
@@ -2022,6 +2162,178 @@ async function main() {
     control.row.hidden = false;
     control.input.disabled = locked;
     control.row.classList.toggle('disabled', locked);
+  }
+  function soundGroup(title) {
+    for (const section of panelBody.querySelectorAll('.section')) {
+      if (section.querySelector(':scope > button')?.textContent !== 'Sound') continue;
+      for (const group of section.querySelectorAll(':scope > .section-body > .group')) {
+        if (group.querySelector(':scope > button')?.textContent === title) return group;
+      }
+    }
+    return null;
+  }
+  function setGroupDisabled(title, disabled) {
+    const group = soundGroup(title);
+    if (!group) return;
+    group.classList.toggle('disabled', disabled);
+    const button = group.querySelector(':scope > button');
+    button.disabled = disabled;
+    if (disabled) setDisclosure(group, false);
+  }
+  function applySoundPlayback() {
+    const oceanSound = ['audioVolume', 'audioRumble', 'audioWash', 'audioHiss', 'audioSync', 'audioStereo'];
+    const rainSound = ['rainVolume', 'rainDrops', 'rainWind', 'rainSnap', 'rainRumble'];
+    const master = Boolean(P.sound);
+    setGroupDisabled('Ocean', !master);
+    setGroupDisabled('Rain', !master);
+    setSettingLocked('oceanPlayback', !master);
+    setSettingLocked('rainPlayback', !master);
+    for (const key of oceanSound) setSettingLocked(key, !master || !P.oceanPlayback);
+    for (const key of rainSound) setSettingLocked(key, !master || !P.rainPlayback);
+  }
+  function rainWord(value) {
+    if (value < 0.04) return 'None';
+    if (value < 0.18) return 'Drizzle';
+    if (value < 0.38) return 'Light';
+    if (value < 0.62) return 'Moderate';
+    if (value < 0.84) return 'Heavy';
+    return 'Violent';
+  }
+  function showRainReadout() {
+    const control = controls.get('rainIntensity');
+    if (!control?.output) return;
+    control.output.textContent = rainWord(P.rainIntensity);
+    control.output.title = Number(P.rainIntensity).toFixed(2);
+  }
+  function showDrivenChoice(key, value) {
+    P[key] = value;
+    const control = controls.get(key);
+    if (control?.input) control.input.value = value;
+  }
+  function hurricaneOn() {
+    return Boolean(P.rain && P.rainStyle === 'hurricane');
+  }
+  function driveSea(key, value) {
+    const prev = P[key];
+    showDrivenSetting(key, value);
+    if (Math.abs(P[key] - prev) < 1e-4) return;
+    if (key === 'windSpeed' || key === 'swellHs' || key === 'choppy') needSpectrum = true;
+    if (key === 'haze') needLUT = true;
+    envFull = 2;
+  }
+  function updateHurricaneSea() {
+    if (!hurricaneOn()) return;
+    const k = Math.max(0.45, Math.min(1, P.rainIntensity || 0));
+    driveSea('windSpeed', 10 + 10 * k);
+    driveSea('swellHs', Math.min(4, 1.8 + 2.2 * k));
+    driveSea('choppy', Math.min(1.6, 1.25 + 0.3 * k));
+    driveSea('foam', Math.min(3, 1.4 + 1.2 * k));
+    driveSea('haze', Math.min(15, 5.5 + 6.5 * k));
+  }
+  function driveCloud(key, value) {
+    const control = controls.get(key);
+    if (control) value = Math.min(control.max, Math.max(control.min, value));
+    const prev = P[key];
+    showDrivenSetting(key, value);
+    if (Math.abs(P[key] - prev) > 1e-4) envFull = 2;
+  }
+  function updateRainClouds() {
+    const on = rainAmount() > 0.02;
+    if (on && !rainCloudManual && P.cloudMode !== 'dynamic') {
+      rainCloudManual = {};
+      for (const key of RAIN_CLOUDS) rainCloudManual[key] = P[key];
+    }
+    if (!on && rainCloudManual) {
+      const saved = rainCloudManual;
+      rainCloudManual = null;
+      if (P.cloudMode !== 'dynamic') {
+        for (const key of Object.keys(saved)) showDrivenSetting(key, saved[key]);
+      }
+      envFull = 2;
+    }
+    const dynamic = P.cloudMode === 'dynamic';
+    for (const key of RAIN_CLOUDS) setSettingLocked(key, on || dynamic);
+    if (!on) return;
+    const a = rainAmount();
+    const storm = P.rainStyle === 'thunderstorm' ? 1 : 0;
+    const hurr = P.rainStyle === 'hurricane' ? 1 : 0;
+    driveCloud('clouds', 0.78 + 0.18 * a + 0.03 * storm + 0.02 * hurr);
+    driveCloud('cloudAltitude', 1.25 - 0.55 * a - 0.15 * hurr);
+    driveCloud('cloudScale', 1.55 + 0.9 * a + 0.3 * hurr);
+    driveCloud('cloudDensity', 3.0 + 1.8 * a + 0.45 * storm + 0.7 * hurr);
+    driveCloud('veil', 0.55 + 0.3 * a + 0.08 * storm);
+    driveCloud('highCloudDensity', 1.05 + 0.55 * a);
+    driveCloud('cloudSoftness', 1.55 + 0.6 * a);
+    driveCloud('cloudSilver', 0.38 - 0.22 * a - 0.08 * storm);
+    driveCloud('cloudAmbient', 0.7 - 0.18 * a - 0.08 * storm);
+  }
+  function applyHurricaneState() {
+    const on = hurricaneOn();
+    if (on && !hurricaneManual) {
+      hurricaneManual = {};
+      for (const key of HURRICANE_OCEAN) hurricaneManual[key] = P[key];
+    }
+    if (!on && hurricaneManual) {
+      const saved = hurricaneManual;
+      hurricaneManual = null;
+      for (const key of Object.keys(saved)) showDrivenSetting(key, saved[key]);
+      needSpectrum = true;
+      needLUT = true;
+      envFull = 2;
+    }
+    for (const key of HURRICANE_OCEAN) setSettingLocked(key, on);
+    if (on) updateHurricaneSea();
+    updateRainClouds();
+  }
+  function rainFromObservation(obs) {
+    const code = Number(obs.code) || 0;
+    const chance = Math.max(0, Math.min(1, (Number(obs.chance) || 0) / 100));
+    let intensity = 0;
+    let style = 'rain';
+    if (code >= 95) {
+      style = 'thunderstorm';
+      intensity = 0.62 + 0.28 * chance;
+    } else if (code >= 80 && code <= 82) {
+      intensity = code >= 82 ? 0.8 : code === 81 ? 0.55 : 0.4;
+    } else if (code >= 61 && code <= 67) {
+      intensity = code >= 65 ? 0.74 : code >= 63 ? 0.5 : 0.34;
+    } else if (code >= 51 && code <= 57) {
+      intensity = code >= 55 ? 0.22 : 0.1;
+    } else if ((Number(obs.precipitation) || 0) > 0 || chance > 0.6) {
+      intensity = 0.12;
+    }
+    return { intensity: Math.min(1, intensity), style };
+  }
+  function raiseLightning(style) {
+    const floor = style === 'hurricane' ? 0.85 : style === 'thunderstorm' ? 0.55 : 0;
+    if (floor > P.rainLightning) showDrivenSetting('rainLightning', floor);
+  }
+  function updateFollowedRain() {
+    if (!(P.rain && P.rainFollow) || !weatherWidget) return;
+    const obs = weatherWidget.getObservation();
+    if (!obs) return;
+    const mapped = rainFromObservation(obs);
+    if (Math.abs(P.rainIntensity - mapped.intensity) > 0.02) showDrivenSetting('rainIntensity', mapped.intensity);
+    if (P.rainStyle !== mapped.style) {
+      showDrivenChoice('rainStyle', mapped.style);
+      raiseLightning(mapped.style);
+      applyHurricaneState();
+    }
+  }
+  function applyRainFollow() {
+    const follow = Boolean(P.rain && P.rainFollow);
+    if (follow && !rainManual) rainManual = { rainIntensity: P.rainIntensity, rainStyle: P.rainStyle };
+    if (!follow && rainManual) {
+      const saved = rainManual;
+      rainManual = null;
+      showDrivenSetting('rainIntensity', saved.rainIntensity);
+      showDrivenChoice('rainStyle', saved.rainStyle);
+    }
+    setSettingLocked('rainFollow', !P.rain);
+    setSettingLocked('rainIntensity', follow);
+    setSettingLocked('rainStyle', follow);
+    if (follow) updateFollowedRain();
+    applyHurricaneState();
   }
   function applySunControls() {
     const placed = skyUsesPlace();
@@ -2343,6 +2655,9 @@ async function main() {
         control.output.textContent = value ? control.onText : control.offText;
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
+      if (key === 'sound' || key === 'oceanPlayback' || key === 'rainPlayback') applySoundPlayback();
+      if (key === 'rain' || key === 'rainFollow') applyRainFollow();
+      if (key === 'rainFollow') applyWeather(true);
       if (key === 'showInfo' || key === 'showButtons') applyShowInfo();
       if (key.startsWith('clock') || key === 'compass' || key === 'compassTilt') applyClock();
       if (key.startsWith('weather')) applyWeather();
@@ -2362,6 +2677,10 @@ async function main() {
       if (key === 'skyMode') applySkyMode(true);
       if (key === 'cloudMode') applyCloudMode();
       if (key === 'starMode') applyStarMode();
+      if (key === 'rainStyle') {
+        if (!P.rainFollow) raiseLightning(value);
+        applyHurricaneState();
+      }
       if (key === 'skyLapseStart') resetTimeLapse();
       if (key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') resolveZipCode();
       if (key === 'skyMode' || key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') envFull = 2;
@@ -2377,6 +2696,10 @@ async function main() {
       control.output.textContent = control.input.value;
     }
     P[key] = value;
+    if (key === 'rainIntensity') {
+      showRainReadout();
+      updateRainClouds();
+    }
     const kind = control ? control.kind : (key === 'swellSpread' ? 'spec' : '');
     if (kind === 'spec') needSpectrum = true;
     if (kind === 'lut') needLUT = true;
@@ -2391,7 +2714,7 @@ async function main() {
       applyTiltAngle();
     }
     // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
-    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -2401,6 +2724,8 @@ async function main() {
     if (cloudManual && CLOUD_DRIVEN.includes(key)) cloudManual[key] = P[key];
     if (starManual && STAR_DRIVEN.includes(key)) starManual[key] = P[key];
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
+    if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) hurricaneManual[key] = P[key];
+    if (rainManual && Object.hasOwn(rainManual, key)) rainManual[key] = P[key];
     if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
     if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
     if (P.cloudMode === 'dynamic' && CLOUD_DRIVEN.includes(key)) updateDynamicClouds();
@@ -2448,6 +2773,9 @@ async function main() {
     cloudManual = null;
     starManual = null;
     moonManual = null;
+    hurricaneManual = null;
+    rainManual = null;
+    rainCloudManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
     headingExplicit = true;
@@ -2564,6 +2892,88 @@ async function main() {
     device.queue.writeBuffer(foamUBO, 0, foamUArr);
   }
 
+  function rainAmount() {
+    return P.rain ? Math.max(0, Math.min(1, P.rainIntensity)) : 0;
+  }
+  function updateLightning(dt) {
+    const amount = rainAmount();
+    const rate = amount > 0.02 ? Math.max(0, Math.min(1, P.rainLightning)) : 0;
+    if (boltLife > 0) {
+      boltLife -= dt;
+      const flick = Math.sin(boltLife * 78) > -0.15 ? 1 : 0.28;
+      boltFlash = Math.max(0, boltLife / boltDur) * flick * boltPower;
+      boltOn = boltFlash > 0.02 ? 1 : 0;
+    } else {
+      boltFlash = 0;
+      boltOn = 0;
+    }
+    if (rate < 0.01) return;
+    nextBolt -= dt;
+    if (nextBolt > 0) return;
+    const mean = Math.max(1.4, 18 * (1 - rate) + 1.5);
+    nextBolt = mean * (0.4 + Math.random() * 0.9);
+    const az = Math.random() * Math.PI * 2;
+    boltX = Math.cos(az);
+    boltZ = Math.sin(az);
+    boltSeed = Math.random() * 200;
+    boltDur = 0.14 + Math.random() * 0.2;
+    boltLife = boltDur;
+    boltPower = 0.65 + Math.random() * 0.55;
+    boltFlash = boltPower;
+    boltOn = 1;
+    oceanAudio.strike(az, 120 + Math.random() * 2400);
+  }
+  function writeRainUniforms(dt) {
+    const amount = rainAmount();
+    const style = P.rainStyle === 'hurricane' ? 2 : P.rainStyle === 'thunderstorm' ? 1 : 0;
+    const storm = style === 1 ? 1 : 0;
+    const hurr = style === 2 ? 1 : 0;
+    const ts = RAIN_MAP / RAIN_RES;
+    const ox = Math.round(cam.x / ts) * ts;
+    const oz = Math.round(cam.z / ts) * ts;
+    if (rainPrevX === null) { rainPrevX = ox; rainPrevZ = oz; }
+    const dir = P.windDir * D2R;
+    rainF[0] = cam.x; rainF[1] = cam.y; rainF[2] = cam.z; rainF[3] = simTime;
+    rainF[4] = Math.cos(dir); rainF[5] = Math.sin(dir); rainF[6] = P.windSpeed; rainF[7] = amount;
+    rainF[8] = P.rainRipples; rainF[9] = P.rainSplashes; rainF[10] = boltFlash; rainF[11] = style;
+    rainF[12] = boltX; rainF[13] = boltZ; rainF[14] = boltSeed; rainF[15] = boltOn;
+    rainActive = amount <= 0 ? 0 : Math.min(MAX_DROPS, Math.floor((500 + amount * amount * 11000) * (hurr ? 1.15 : 1)));
+    rainF[16] = RAIN_MAP; rainF[17] = dt; rainF[18] = rainActive;
+    rainF[19] = Math.min(1, 0.12 + amount * 0.42 + hurr * 0.5 + storm * 0.12);
+    rainF[20] = ox; rainF[21] = oz; rainF[22] = rainPrevX; rainF[23] = rainPrevZ;
+    rainF[24] = amount * (0.00008 + 0.00022 * storm + 0.0015 * hurr);
+    rainF[25] = amount > 0 ? Math.max(0.2, 1 - amount * (0.28 + 0.2 * storm + 0.38 * hurr)) : 1;
+    rainF[26] = Math.min(0.88, amount * (0.2 + 0.36 * storm + 0.48 * hurr));
+    rainF[27] = 0.3 + hurr * 0.9 + storm * 0.25;
+    rainF[28] = 6.2 + amount * 7.5 + hurr * 2.5;
+    rainF[29] = 16 + amount * 6;
+    rainF[30] = 12 + amount * 14;
+    rainF[31] = Math.min(0.55, 0.04 + P.rainSplashes * 0.12 + hurr * 0.08);
+    rainPrevX = ox;
+    rainPrevZ = oz;
+    device.queue.writeBuffer(rainUBO, 0, rainF);
+  }
+  function encodeRain(cp) {
+    if (!rainInited) {
+      cp.setPipeline(rainInitPipe);
+      cp.setBindGroup(0, bgRainInit);
+      cp.dispatchWorkgroups(Math.ceil(MAX_DROPS / 64));
+      rainInited = true;
+    }
+    if (rainActive > 0) {
+      cp.setPipeline(rainDropPipe);
+      cp.setBindGroup(0, bgRainDrop);
+      cp.dispatchWorkgroups(Math.ceil(rainActive / 64));
+    }
+    rainCur = 1 - rainCur;
+    cp.setPipeline(rainRipplePipe);
+    cp.setBindGroup(0, bgRainRipple[rainCur]);
+    cp.dispatchWorkgroups(RAIN_RES / 8, RAIN_RES / 8);
+    cp.setPipeline(rainClearPipe);
+    cp.setBindGroup(0, bgRainClear);
+    cp.dispatchWorkgroups(Math.ceil((RAIN_RES * RAIN_RES) / 256));
+  }
+
   function frame(now) {
     if (shooting) return;  // paused while a screenshot is read back
     requestAnimationFrame(frame);
@@ -2578,6 +2988,9 @@ async function main() {
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
     updateDynamicClouds(dt);
+    updateFollowedRain();
+    updateHurricaneSea();
+    updateRainClouds();
     updateDynamicStars();
     advanceTimeLapse(dt);
     if (fixedDt) dt = fixedDt;
@@ -2588,6 +3001,8 @@ async function main() {
     if (simTime > LOOP) simTime -= LOOP;
     frameIndex++;
     audioWaterH += (waterH - audioWaterH) * Math.min(1, dt * 12);
+    updateLightning(dt);
+    writeRainUniforms(dt);
     oceanAudio.update(simTime, audioWaterH, dt, cam, P);
 
     writeFrame(simTime);
@@ -2618,6 +3033,7 @@ async function main() {
       needLUT = false;
     }
     encodeSim(cp);
+    encodeRain(cp);
     cp.setPipeline(probePipe);
     cp.setBindGroup(0, bgProbe);
     cp.dispatchWorkgroups(1);
@@ -2643,7 +3059,7 @@ async function main() {
     const rp = enc.beginRenderPass(mainPass);
     if (nodeCount) {
       rp.setPipeline(oceanPipe);
-      rp.setBindGroup(0, bgOcean[foamCur]);
+      rp.setBindGroup(0, bgOcean[foamCur][rainCur]);
       rp.setVertexBuffer(0, instBuf);
       rp.setIndexBuffer(idxBuf, 'uint16');
       rp.drawIndexed(GRID * GRID * 6, nodeCount);
@@ -2651,6 +3067,16 @@ async function main() {
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
     rp.draw(3);
+    if (P.rain && P.rainIntensity > 0.004) {
+      if (rainActive > 0) {
+        rp.setPipeline(rainDrawPipe);
+        rp.setBindGroup(0, bgRainDraw);
+        rp.draw(rainActive * 6);
+      }
+      rp.setPipeline(rainMistPipe);
+      rp.setBindGroup(0, bgRainMist);
+      rp.draw(3);
+    }
     rp.end();
 
     for (let m = 0; m < BLOOM_LEVELS; m++) {

@@ -1,6 +1,7 @@
 // Ocean surface + sky background rendering.
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS, ENV_SIZE, N, CASCADES } from './common.js';
 import { SKY_RENDER_FUNCS, SKY_CLOUD_FUNCS } from './sky.js';
+import { RAIN_OCEAN, RAIN_SKY } from './rain.js';
 
 const RENDER_BINDINGS = /* wgsl */ `
 @group(0) @binding(0) var<uniform> F: Frame;
@@ -13,7 +14,7 @@ const RENDER_BINDINGS = /* wgsl */ `
 // screen-space derivative of each layer's edge function sets the width of its opacity edge.
 export const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
 @group(0) @binding(4) var starMap: texture_2d<f32>;
-` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + /* wgsl */ `
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
 struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
@@ -37,7 +38,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
   let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a, true) + cl.rgb + sunDisk(dir) * sunT;
-  return vec4f(L, 1.0);
+  return vec4f(applyRainSky(d2, L), 1.0);
 }
 `;
 
@@ -50,7 +51,7 @@ export const OCEAN = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ 
 @group(0) @binding(9) var sampR: sampler;
 @group(0) @binding(10) var foamWorld: texture_2d_array<f32>;
 @group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>; // [0] sun, [1] moon cloud transmittance
-` + SKY_RENDER_FUNCS + /* wgsl */ `
+` + SKY_RENDER_FUNCS + RAIN_OCEAN + /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 const ENV_TEXELS_PER_RAD: f32 = ${ENV_SIZE}.0 / 1.5708;
 const TEX_N: f32 = ${N}.0;
@@ -82,6 +83,7 @@ struct VSOut {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
   }
+  disp.y += rainHeight(xz);
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
   o.rel = world - F.camPos.xyz;
@@ -177,6 +179,8 @@ fn moonIlluminance() -> vec3f {
     jxz += av.w;
     cov += vec3f(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
   }
+  let rain = rainField(xz);
+  s += rain.xy;
   let dist = length(in.rel);
   let V = -in.rel / dist;
   let Ld = F.sunDir.xyz;
@@ -184,8 +188,9 @@ fn moonIlluminance() -> vec3f {
   // slope statistics (LEAN): add unresolved capillary roughness + sun disk size
   // unresolved roughness; grows with distance to reach Cox-Munk-like totals in the far sheen
   let unres = F.waterCol.w + 0.0035 * smoothstep(30.0, 500.0, dist);
-  cov.x += unres;
-  cov.y += unres;
+  let wet = rainRough();
+  cov.x += unres + wet;
+  cov.y += unres + wet;
   let jx = max(1.0 + jxx, 0.15);
   let jz = max(1.0 + jzz, 0.15);
   let sl = vec2f(s.x / jx, s.y / jz);
@@ -197,7 +202,7 @@ fn moonIlluminance() -> vec3f {
   cov += aa * min(1.0, 0.03 / max(max(aa.x, aa.y), 1e-8));
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
 
-  let sunE = sunIlluminance() * sunVis[0];
+  let sunE = sunIlluminance() * sunVis[0] * Rain.atmo.y;
   let moonL = normalize(F.moonDir.xyz);
   let moonE = moonIlluminance();
   let skyUp = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
@@ -213,6 +218,10 @@ fn moonIlluminance() -> vec3f {
   var spec = sunE * facetGlitter(V, Ld, sl, cov, SUN_ANG_R) * step(0.0, Ld.y);
   if (moonE.g > 0.0) {
     spec += moonE * facetGlitter(V, moonL, sl, cov, MOON_DISC * max(F.moonLight.w, 0.0));
+  }
+  if (Rain.amt.z > 0.01 && Rain.bolt.w > 0.5) {
+    let bolt = normalize(vec3f(Rain.bolt.x, 0.22, Rain.bolt.y));
+    spec += vec3f(0.72, 0.82, 1.0) * Rain.amt.z * facetGlitter(V, bolt, sl, cov, 0.03) * 4.0;
   }
 
   // ---- sky reflection ----
@@ -274,6 +283,7 @@ fn moonIlluminance() -> vec3f {
   var foamMask = clamp(fm * smoothstep(0.0, 0.5, cover), 0.0, 1.0) * (0.68 + 0.32 * smoothstep(0.3, 0.9, cover));
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
+  foamMask = max(foamMask, smoothstep(0.05, 0.5, rain.z) * 0.94);
   // submerged bubbles brighten and tint the water just beneath foam
   body += F.sssCol.rgb * (sunE * 0.05 + ambient * 0.35) * clamp(cover, 0.0, 1.0);
   body += vec3f(0.10, 0.32, 0.30) * skyUp * fwl.g * 0.35;
@@ -301,11 +311,12 @@ fn moonIlluminance() -> vec3f {
     return vec4f(fwl.r, fwl.g, fresh, 1.0) * 0.2;
   }
   var col = body * (1.0 - Fr) + refl * Fr + spec;
+  col += rainFlash(nrm);
   col = mix(col, foamLit, foamMask * 0.95);
 
   // ---- aerial perspective ----
   // aerial perspective: atmosphere extinction plus a marine haze floor
-  let T = exp(-max(F.fogExt.rgb, vec3f(F.fogExt.w)) * dist);
+  let T = exp(-(max(F.fogExt.rgb, vec3f(F.fogExt.w)) + vec3f(Rain.atmo.x)) * dist);
   let hz = normalize(vec3f(-V.x, 0.002, -V.z));
   let fogCol = skyAtmo(hz);
   col = col * T + fogCol * (1.0 - T);

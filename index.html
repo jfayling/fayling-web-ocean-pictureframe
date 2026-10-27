@@ -39,6 +39,8 @@
   #panel .section-toggle { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid #e5e1d822;
                            font: 650 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
   #panel .section:first-child .section-toggle { margin-top: 0; padding-top: 0; border-top: 0; }
+  #panel .group.disabled > .group-toggle,
+  #panel .group.disabled > .group-toggle:hover { opacity: .38; color: inherit; cursor: default; }
   #panel .group-toggle, #panel .subgroup-toggle { margin: 7px 0 0; font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: .04em;
                          text-transform: uppercase; opacity: .72; }
   #panel .subgroup-toggle { font-size: 10.5px; opacity: .64; }
@@ -52,7 +54,7 @@
   #panel .section-body { padding: 4px 0 2px; }
   #panel .group-body { margin-left: 14px; }
   #panel .subgroup-body { margin-left: 12px; }
-  #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
+  #panel label { display: grid; grid-template-columns: 1fr 110px 72px; gap: 6px; align-items: center; margin: 3px 0; }
   #panel label[hidden], #panel .group[hidden], #panel .subgroup[hidden] { display: none; }
   #panel input[type="range"] { width: 110px; accent-color: #e2a04e; }
   #panel select { width: 156px; padding: 3px 5px; border: 1px solid #e5e1d833; border-radius: 5px;
