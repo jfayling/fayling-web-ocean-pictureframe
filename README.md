@@ -39,7 +39,10 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 | F1 or the Settings button | Open the settings panel |
 | Esc, H, or the × button | Close the settings panel |
 | H | Show or hide the settings panel |
-| M, the Sound button, or the Sound setting | Mute or unmute the ocean and the rain |
+| M, the Sound button, or Sound → Playback | Mute or unmute the ocean and the rain |
+| T | Show or hide the clock |
+| F | Show or hide the weather |
+| N | Show or hide the compass |
 
 The camera keeps itself above the displaced water surface, so waves never pass through it.
 
@@ -51,21 +54,15 @@ Sound and Settings sit together at the top right. They use the same surface as t
 
 ## Settings
 
-The panel is an accordion. The sections are **General**, **Sound**, **Widgets**, **Sky**, and **Ocean**. Opening one closes the others, and the groups inside a section work the same way. Clock, Compass, and Weather are groups inside Widgets. Rain is a group inside Sky. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
+The panel is an accordion. The sections are **General**, **Sound**, **Widgets**, **Sky**, and **Ocean**. Opening one closes the others, and the groups inside a section work the same way. Clock, Compass, and Weather are groups inside Widgets. Rain is a group inside Sky, after Atmosphere. General lists the keyboard and mouse shortcuts. The pictures show the controls for that part of the panel.
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 
-Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** supports every setting shown in the panel, applies recognized values, and leaves every omitted setting unchanged. Booleans such as `sound`, `showButtons`, and `showInfo` accept `true` or `false`. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. Export and Share preserve the user's Static values while a Dynamic mode is active, so switching back to Static after an import or shared link restores the same manual setup. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
+Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** applies the recognized values in that file and leaves every omitted setting unchanged. Booleans such as `sound`, `oceanPlayback`, `rainPlayback`, `showButtons`, and `showInfo` accept `true` or `false`. An older file that still has `rainThunder` is read as both thunder snap and thunder rumble. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. The same `rainThunder` split applies to a shared link and to a saved session. Export and Share keep the manual values behind a lock: Static settings while a Dynamic mode is active, the clouds from before a rain deck, and the wind, swell, chop, foam, and haze from before a hurricane. Import writes those locked values back into the saved setup, so turning the mode or the storm off restores them. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
 URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
 
 When a mode is Dynamic, Date and time, or Time lapse, the controls that mode calculates stay on screen, show the calculated values, and cannot be edited. They become editable again when you choose Static.
-
-### Ocean
-
-![Ocean wind, swell, and water settings](docs/settings-ocean.png)
-
-Wind, swell, and water. Wind speed, direction, and fetch shape the wind sea. Swell height, wavelength, and direction add a long-crested swell. Choppiness, turbidity, and foam tune the surface.
 
 ### Sound
 
@@ -83,6 +80,10 @@ Sound starts off. **Playback** at the top of this section, the Sound button, and
 
 **Rain** sets the rain bed, drop impacts, wind, thunder snap, and thunder rumble. Those levels stay in this section, separate from the ocean mix.
 
+### Widgets
+
+Clock, Compass, and Weather are the picture-frame overlays. Each is a group inside Widgets.
+
 ### Clock
 
 ![Clock display and appearance settings](docs/settings-clock.png)
@@ -90,6 +91,10 @@ Sound starts off. **Playback** at the top of this section, the Sound button, and
 The clock is a picture-frame overlay, enabled by default, and it stays up when Onscreen information is hidden. It uses 12-hour time and shows the date unless you change those options. Display covers on/off, 12/24-hour time, seconds, and date. Appearance covers modern, monospace, or classic type, six screen positions, size, colour, opacity, and background strength. The default position is top center.
 
 The clock shows the actual current time. In Date and time and Time lapse modes it does not follow the sky's simulated moment.
+
+### Compass
+
+The compass is on by default and sits along the top edge. It can move to the bottom. **Compass (°)** aims the view, and **Tilt (°)** sets the pitch. **Show tilt** puts that pitch on the compass. Dragging the view updates both. **N** shows or hides it. On a placed sky, north is geographic: north of the equator the default view looks south, so straight ahead reads 180. A static sky treats straight ahead as north.
 
 ### Weather
 
@@ -103,21 +108,11 @@ Active U.S. National Weather Service alerts appear above the card. The title sta
 
 Current conditions come from [Open-Meteo](https://open-meteo.com/). US ZIP codes, and postal codes written with a country, are resolved through [`api.zippopotam.us`](https://api.zippopotam.us/). Other places are resolved through the [Open-Meteo geocoding API](https://open-meteo.com/en/docs/geocoding-api). Alerts come from [`api.weather.gov`](https://api.weather.gov/) and appear for United States locations only. The weather location is separate from the sky location, and both default to 30265.
 
-### Rain
-
-Rain is a group inside Sky. It is off until you turn it on. Intensity runs from a few drops through drizzle, light, moderate, heavy, and violent rain. The streaks slant with the ocean wind. Near the camera, drops hit the water and leave a dent, a ring, and a short splash. Farther out, the rain thins into a mist toward the horizon, and the surface roughens so the glitter path widens.
-
-While rain is on, the clouds become a rain deck. Coverage closes into an overcast sheet, the base drops, and the layer grows broader, softer, and grayer as the rain gets heavier. Thunderstorms darken that deck further. Those cloud controls show the rain values and cannot be edited until rain is off, which restores the clouds you had before.
-
-**Thunderstorm** also raises the lightning rate. Lightning flashes the sky and the water together. Thunder follows, a crack and then a rumble, later when the bolt was farther away. **Hurricane** does that at the top of the scale: near-horizontal rain, spray, frequent lightning, wind, and a storm sea. While hurricane is on, wind speed, swell, chop, foam, and haze show the storm values and cannot be edited. Turning hurricane or rain off restores the values you had before.
-
-**Follow weather card** uses the current observation, and it is disabled while Rain is off. Drizzle, rain, and showers set the intensity. A thunderstorm code selects Thunderstorm. Hurricane stays a manual choice, so turn Follow off to select it. Rain, drop, wind, and thunder levels are in the Sound section. The Sound control still mutes everything.
-
 ### Sky
 
 ![Static sky controls for the sun, moon, and stars](docs/settings-sky.png)
 
-Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior start in **Dynamic / real-world**. Each can be switched to Static. The sky location defaults to ZIP code 30265.
+Sky behavior starts in **Dynamic / real-time**. Cloud behavior and star behavior start in **Dynamic / real-world**. Each can be switched to Static. The groups are Mode, Sun, Moon, Stars, Clouds, Atmosphere, and Rain. The sky location defaults to ZIP code 30265.
 
 | Mode | What it does |
 |---|---|
@@ -145,6 +140,22 @@ Star behavior has the same Static and Dynamic / real-world choice as the clouds.
 Clouds are two independently moving layers, a broken low cumulus and a fibrous high deck. In Static mode each layer has its own wind direction, speed, altitude, scale, coverage, and optical density. Shape evolution changes the formations as they drift. Shared lighting controls tune edge softness, silver linings, and ambient light, and motion can be turned off. Lighting follows the sun through the day: warm transmission at sunrise and sunset, bright backlit edges, self-shadowed interiors, and cooler ambient bases. After dark the clouds stay visible in every sky mode. Moonlight brightens the faces turned toward the moon, and a cool ambient keeps the cloud shapes readable when the moon is down or hidden. A cloud hides the stars and the moon behind it. The thinnest edges still let a few stars through.
 
 In Dynamic / real-world mode every cloud control follows a deterministic, location-dependent weather pattern. Synoptic systems evolve over several simulated days, with persistent nighttime cloud cover, daytime convective growth, changing cloud bases and density, plausible low/high-level wind shear, and faster high-level winds. Date and time reproduces the same conditions for the same place and instant, while Time lapse advances the weather with the simulated sky. This is a weather model rather than a live observation feed. The manual cloud controls stay visible but cannot be edited while Dynamic is selected, and the previous manual values return when Static is selected again. Cloud motion is accumulated a little at a time, so a change in wind or the periodic wave reset does not jump the whole layer.
+
+### Rain
+
+Rain is the last group inside Sky. It is off until you turn it on. Weather sets the switch, the intensity, the style, and **Follow weather card**. Surface sets ripples and splashes. Storm sets lightning. Intensity runs from a few drops through drizzle, light, moderate, heavy, and violent rain. The streaks slant with the ocean wind. Near the camera, drops are long falling streaks that hit the water and leave a dent, a ring, and a short splash. Farther out they thin into a mist toward the horizon, and the surface roughens so the glitter path widens.
+
+While rain is on, the clouds become a rain deck. Coverage closes into an overcast sheet, the base drops, and the layer grows broader, softer, and grayer as the rain gets heavier. Thunderstorms darken that deck further. Those cloud controls show the rain values and cannot be edited until rain is off, which restores the clouds you had before.
+
+**Thunderstorm** also raises the lightning rate. Lightning flashes the sky and the water together. Thunder follows, a crack and then a rumble, later when the bolt was farther away. **Hurricane** does that at the top of the scale: near-horizontal rain, spray, frequent lightning, wind, and a storm sea. While hurricane is on, wind speed, swell, chop, foam, and haze show the storm values and cannot be edited. Turning hurricane or rain off restores the values you had before.
+
+**Follow weather card** uses the current observation, and it is disabled while Rain is off. Drizzle, rain, and showers set the intensity. A thunderstorm code selects Thunderstorm. Hurricane stays a manual choice, so turn Follow off to select it. Rain, drop, wind, and thunder levels are in the Sound section. Playback there still mutes everything, and each mix has its own switch.
+
+### Ocean
+
+![Ocean wind, swell, and water settings](docs/settings-ocean.png)
+
+Wind, swell, and water. Wind speed, direction, and fetch shape the wind sea. Swell height, wavelength, and direction add a long-crested swell. Choppiness, turbidity, and foam tune the surface.
 
 ## How it works
 
@@ -195,7 +206,7 @@ The per-frame code reuses preallocated typed arrays and descriptors, so the garb
 
 Maksymilian Dendura built [web-ocean](https://github.com/Noniv/web-ocean) with Claude Code (Opus 5.5). The goal was the most realistic water it could produce, in WebGPU, with a floating camera. The architecture and implementation were left to the model. It checked its own work by rendering screenshots in headless Chrome and having separate critic subagents review them. Feedback along the way, mainly on the clouds, led to replacing volumetric clouds with the flat layers and later fixing their edge aliasing.
 
-The picture-frame additions in this fork — sound, clock, weather, placed sky modes, the moon and stars, and the settings panel — were built on top of that renderer.
+The picture-frame additions in this fork — sound, clock, compass, weather, rain, placed sky modes, the moon and stars, and the settings panel — were built on top of that renderer.
 
 ## Repository layout
 
@@ -203,11 +214,11 @@ The picture-frame additions in this fork — sound, clock, weather, placed sky m
 |---|---|
 | `index.html` | Page shell, HUD, clock and weather overlays, and settings panel styles |
 | `js/main.js` | Device setup, resources, camera, settings, and the per-frame loop |
-| `js/audio.js` | Procedural ocean audio driven by the wave probe |
+| `js/audio.js` | Procedural ocean and rain audio driven by the wave probe |
 | `js/astronomy.js` | Sun, moon, and star placement from time and location |
 | `js/star-catalog.js` | Compact public-domain Yale Bright Star Catalogue and star-map generation |
 | `js/weather.js` | Weather card and National Weather Service alerts |
-| `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
+| `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `rain.js` (drops, ripples, streaks, and lightning), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
 | `server.mjs` | Tiny static server for development |
 | `build.mjs` | Builds `ocean.html` and `ocean.min.html` |
 | `docs/` | Time-lapse clip, settings screenshots, and the GitHub Pages player |
