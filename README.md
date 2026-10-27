@@ -51,7 +51,7 @@ Sound and Settings sit together at the top right. They use the same surface as t
 
 ## Settings
 
-The panel is an accordion. The sections are **General**, **Sound**, **Clock**, **Compass**, **Weather**, **Ocean**, and **Sky**. Opening one closes the others, and the groups inside a section work the same way. Rain is a group inside Sky. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
+The panel is an accordion. The sections are **General**, **Sound**, **Widgets**, **Sky**, and **Ocean**. Opening one closes the others, and the groups inside a section work the same way. Clock, Compass, and Weather are groups inside Widgets. Rain is a group inside Sky. General lists the keyboard and mouse shortcuts. The pictures open a section’s groups together so the controls are visible.
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 

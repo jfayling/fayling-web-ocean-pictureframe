@@ -1213,86 +1213,71 @@ async function main() {
         ['rainRumble', 'Thunder rumble', 0, 2, 0.01, 'rain'],
       ] },
     ] },
-    { title: 'Clock', groups: [
-      { title: 'Display', settings: [
-        ['clock', 'Clock', 'toggle', 'On', 'Off'],
-        ['clock24h', '24-hour time', 'toggle', 'On', 'Off'],
-        ['clockSeconds', 'Show seconds', 'toggle', 'Show', 'Hide'],
-        ['clockDate', 'Show date', 'toggle', 'Show', 'Hide'],
+    { title: 'Widgets', groups: [
+      { title: 'Clock', groups: [
+        { title: 'Display', settings: [
+          ['clock', 'Clock', 'toggle', 'On', 'Off'],
+          ['clock24h', '24-hour time', 'toggle', 'On', 'Off'],
+          ['clockSeconds', 'Show seconds', 'toggle', 'Show', 'Hide'],
+          ['clockDate', 'Show date', 'toggle', 'Show', 'Hide'],
+        ] },
+        { title: 'Appearance', settings: [
+          ['clockStyle', 'Style', 'select', [
+            ['modern', 'Modern'],
+            ['mono', 'Monospace'],
+            ['classic', 'Classic'],
+          ]],
+          ['clockPosition', 'Position', 'select', [
+            ['top-left', 'Top left'],
+            ['top-center', 'Top center'],
+            ['top-right', 'Top right'],
+            ['bottom-left', 'Bottom left'],
+            ['bottom-center', 'Bottom center'],
+            ['bottom-right', 'Bottom right'],
+          ]],
+          ['clockSize', 'Size (px)', 32, 144, 1, 'clock'],
+          ['clockColor', 'Color', 'color'],
+          ['clockOpacity', 'Opacity', 0.2, 1, 0.01, 'clock'],
+          ['clockBackground', 'Background', 0, 0.8, 0.01, 'clock'],
+        ] },
       ] },
-      { title: 'Appearance', settings: [
-        ['clockStyle', 'Style', 'select', [
-          ['modern', 'Modern'],
-          ['mono', 'Monospace'],
-          ['classic', 'Classic'],
-        ]],
-        ['clockPosition', 'Position', 'select', [
-          ['top-left', 'Top left'],
-          ['top-center', 'Top center'],
-          ['top-right', 'Top right'],
-          ['bottom-left', 'Bottom left'],
-          ['bottom-center', 'Bottom center'],
-          ['bottom-right', 'Bottom right'],
-        ]],
-        ['clockSize', 'Size (px)', 32, 144, 1, 'clock'],
-        ['clockColor', 'Color', 'color'],
-        ['clockOpacity', 'Opacity', 0.2, 1, 0.01, 'clock'],
-        ['clockBackground', 'Background', 0, 0.8, 0.01, 'clock'],
+      { title: 'Compass', groups: [
+        { title: 'Display', settings: [
+          ['compass', 'Compass', 'toggle', 'On', 'Off'],
+          ['compassPosition', 'Position', 'select', [
+            ['top', 'Top'],
+            ['bottom', 'Bottom'],
+          ]],
+          ['compassHeading', 'Compass (°)', 0, 359, 1, 'aim'],
+          ['tiltAngle', 'Tilt (°)', -86, 86, 0.1, 'aim'],
+          ['compassTilt', 'Show tilt', 'toggle', 'Show', 'Hide'],
+        ] },
       ] },
-    ] },
-    { title: 'Compass', groups: [
-      { title: 'Display', settings: [
-        ['compass', 'Compass', 'toggle', 'On', 'Off'],
-        ['compassPosition', 'Position', 'select', [
-          ['top', 'Top'],
-          ['bottom', 'Bottom'],
-        ]],
-        ['compassHeading', 'Compass (°)', 0, 359, 1, 'aim'],
-        ['tiltAngle', 'Tilt (°)', -86, 86, 0.1, 'aim'],
-        ['compassTilt', 'Show tilt', 'toggle', 'Show', 'Hide'],
-      ] },
-    ] },
-    { title: 'Weather', groups: [
-      { title: 'Location and updates', settings: [
-        ['weather', 'Weather widget', 'toggle', 'Show', 'Hide'],
-        ['weatherZip', 'Location', 'text', 'Lisbon, Portugal'],
-        ['weatherRefresh', 'Refresh (minutes)', 5, 60, 5, 'weather'],
-        ['weatherUnit', 'Units', 'select', [
-          ['fahrenheit', 'Fahrenheit / mph'],
-          ['celsius', 'Celsius / km/h'],
-        ]],
-        ['weatherPosition', 'Position', 'select', [
-          ['top-left', 'Top left'],
-          ['top-right', 'Top right'],
-          ['bottom-left', 'Bottom left'],
-          ['bottom-right', 'Bottom right'],
-        ]],
-      ] },
-      { title: 'Information', settings: [
-        ['weatherTemp', 'Current temperature', 'toggle', 'Show', 'Hide'],
-        ['weatherFeels', 'Feels like', 'toggle', 'Show', 'Hide'],
-        ['weatherPrecip', 'Precipitation', 'toggle', 'Show', 'Hide'],
-        ['weatherHumidity', 'Humidity', 'toggle', 'Show', 'Hide'],
-        ['weatherWind', 'Wind', 'toggle', 'Show', 'Hide'],
-        ['weatherForecast', 'Next 3 hours', 'toggle', 'Show', 'Hide'],
-        ['weatherAlerts', 'U.S. weather alerts', 'toggle', 'Show', 'Hide'],
-      ] },
-    ] },
-    { title: 'Ocean', groups: [
-      { title: 'Wind', settings: [
-        ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
-        ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
-        ['fetchKm', 'Fetch (km)', 5, 800, 1, 'spec'],
-      ] },
-      { title: 'Swell', settings: [
-        ['swellHs', 'Swell height (m)', 0, 4, 0.05, 'spec'],
-        ['swellLength', 'Swell wavelength (m)', 30, 300, 1, 'spec'],
-        ['swellDir', 'Swell direction (deg)', 0, 360, 1, 'spec'],
-      ] },
-      { title: 'Water', settings: [
-        ['choppy', 'Choppiness', 0, 1.6, 0.01, 'spec'],
-        ['turbidity', 'Water turbidity', 0.2, 3, 0.01, ''],
-        ['foam', 'Foam', 0, 3, 0.01, ''],
+      { title: 'Weather', groups: [
+        { title: 'Location and updates', settings: [
+          ['weather', 'Weather widget', 'toggle', 'Show', 'Hide'],
+          ['weatherZip', 'Location', 'text', 'Lisbon, Portugal'],
+          ['weatherRefresh', 'Refresh (minutes)', 5, 60, 5, 'weather'],
+          ['weatherUnit', 'Units', 'select', [
+            ['fahrenheit', 'Fahrenheit / mph'],
+            ['celsius', 'Celsius / km/h'],
+          ]],
+          ['weatherPosition', 'Position', 'select', [
+            ['top-left', 'Top left'],
+            ['top-right', 'Top right'],
+            ['bottom-left', 'Bottom left'],
+            ['bottom-right', 'Bottom right'],
+          ]],
+        ] },
+        { title: 'Information', settings: [
+          ['weatherTemp', 'Current temperature', 'toggle', 'Show', 'Hide'],
+          ['weatherFeels', 'Feels like', 'toggle', 'Show', 'Hide'],
+          ['weatherPrecip', 'Precipitation', 'toggle', 'Show', 'Hide'],
+          ['weatherHumidity', 'Humidity', 'toggle', 'Show', 'Hide'],
+          ['weatherWind', 'Wind', 'toggle', 'Show', 'Hide'],
+          ['weatherForecast', 'Next 3 hours', 'toggle', 'Show', 'Hide'],
+          ['weatherAlerts', 'U.S. weather alerts', 'toggle', 'Show', 'Hide'],
+        ] },
       ] },
     ] },
     { title: 'Sky', groups: [
@@ -1392,6 +1377,23 @@ async function main() {
         { title: 'Storm', settings: [
           ['rainLightning', 'Lightning', 0, 1, 0.01, 'rain'],
         ] },
+      ] },
+    ] },
+    { title: 'Ocean', groups: [
+      { title: 'Wind', settings: [
+        ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
+        ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
+        ['fetchKm', 'Fetch (km)', 5, 800, 1, 'spec'],
+      ] },
+      { title: 'Swell', settings: [
+        ['swellHs', 'Swell height (m)', 0, 4, 0.05, 'spec'],
+        ['swellLength', 'Swell wavelength (m)', 30, 300, 1, 'spec'],
+        ['swellDir', 'Swell direction (deg)', 0, 360, 1, 'spec'],
+      ] },
+      { title: 'Water', settings: [
+        ['choppy', 'Choppiness', 0, 1.6, 0.01, 'spec'],
+        ['turbidity', 'Water turbidity', 0.2, 3, 0.01, ''],
+        ['foam', 'Foam', 0, 3, 0.01, ''],
       ] },
     ] },
   ];
@@ -2726,6 +2728,7 @@ async function main() {
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
     if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) hurricaneManual[key] = P[key];
     if (rainManual && Object.hasOwn(rainManual, key)) rainManual[key] = P[key];
+    if (rainCloudManual && Object.hasOwn(rainCloudManual, key)) rainCloudManual[key] = P[key];
     if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
     if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
     if (P.cloudMode === 'dynamic' && CLOUD_DRIVEN.includes(key)) updateDynamicClouds();
@@ -2759,6 +2762,7 @@ async function main() {
       note('Settings file must be a JSON object');
       return;
     }
+    migrateThunder(data);
     let count = 0;
     for (const key of Object.keys(P)) {
       if (!Object.hasOwn(data, key)) continue;
