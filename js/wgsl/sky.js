@@ -234,26 +234,6 @@ export const SKY_CLOUD_FUNCS = /* wgsl */ `
 // Two thin, light-aware layers: broken low cumulus with cauliflower edges (2 km) and
 // high cirrus wisps (7 km). Each is shaded with self-shadowing towards the sun, bright
 // sun-facing rims, silver linings on thin back-lit parts and warm multiple scattering.
-const CLOUD_ROT: mat2x2f = mat2x2f(0.8, 0.6, -0.6, 0.8);
-// fbm whose octaves fade once smaller than the pixel footprint fp (noise units);
-// 'billow' turns the small octaves into bulgy |noise| for cauliflower-like edges
-fn cloudFbm(p: vec2f, fp: f32, oct: i32, billow: f32) -> f32 {
-  var s = 0.0;
-  var a = 0.5;
-  var q = p;
-  var f = 1.0;
-  for (var i = 0; i < oct; i++) {
-    // fade octaves well before they reach pixel size (half-res buffer) -> no shimmer in motion
-    let w = 1.0 - smoothstep(0.08, 0.28, fp * f);
-    var n = gnoise(q);
-    if (i >= 2) { n = mix(n, abs(n) * 2.0 - 0.38, billow); }
-    s += a * n * w;
-    q = CLOUD_ROT * q * 2.03 + vec2f(13.1, 7.7);
-    f *= 2.03;
-    a *= 0.5;
-  }
-  return s;
-}
 // Signed "edge" functions (cloud where > 0) and their density ramps. The edge value is
 // what the sky pass differentiates (fwidth) to anti-alias the cloud silhouettes analytically.
 // Shape evolution is a generation clock. Each generation crossfades the domain warp to a
@@ -274,28 +254,135 @@ fn morphFlow(t: f32, salt: u32) -> vec2f {
   let u = f * f * (3.0 - 2.0 * f);
   return mix(morphOffset(i, salt), morphOffset(i + 1.0, salt), u);
 }
+// Scroll is integer kilometres plus a fraction, so the noise lattice stays exact after a
+// time lapse has carried the field far past what an f32 coordinate can resolve.
+struct Axis { i: i32, f: f32 }
+struct Pos { x: Axis, y: Axis }
+
+fn gnoiseCell(cell: vec2i, f: vec2f) -> f32 {
+  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  let a = dot(hashGrad(cell), f);
+  let b = dot(hashGrad(cell + vec2i(1, 0)), f - vec2f(1.0, 0.0));
+  let c = dot(hashGrad(cell + vec2i(0, 1)), f - vec2f(0.0, 1.0));
+  let d = dot(hashGrad(cell + vec2i(1, 1)), f - vec2f(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+fn mulWide(a: u32, b: u32) -> vec2u {
+  let a0 = a & 0xFFFFu;
+  let a1 = a >> 16u;
+  let b0 = b & 0xFFFFu;
+  let b1 = b >> 16u;
+  let p00 = a0 * b0;
+  let p01 = a0 * b1;
+  let p10 = a1 * b0;
+  let p11 = a1 * b1;
+  let mid = (p00 >> 16u) + (p01 & 0xFFFFu) + (p10 & 0xFFFFu);
+  let lo = (p00 & 0xFFFFu) | ((mid & 0xFFFFu) << 16u);
+  let hi = p11 + (p01 >> 16u) + (p10 >> 16u) + (mid >> 16u);
+  return vec2u(lo, hi);
+}
+fn addWide(a: vec2u, b: vec2u) -> vec2u {
+  let lo = a.x + b.x;
+  let hi = a.y + b.y + select(0u, 1u, lo < a.x);
+  return vec2u(lo, hi);
+}
+fn mulSigned(i: i32, m: u32) -> vec2u {
+  if (i >= 0) { return mulWide(u32(i), m); }
+  let w = mulWide(u32(-i), m);
+  let lo = ~w.x + 1u;
+  let hi = ~w.y + select(0u, 1u, lo == 0u);
+  return vec2u(lo, hi);
+}
+fn axisMul(a: Axis, s: f32) -> Axis {
+  let neg = s < 0.0;
+  let mag = select(s, -s, neg);
+  let sq = u32(mag * 1048576.0 + 0.5);
+  var bits = mulSigned(a.i, sq);
+  let fq = u32(clamp(a.f, 0.0, 0.999999) * 1048576.0);
+  let extra = mulWide(fq, sq);
+  bits = addWide(bits, vec2u((extra.y << 12u) | (extra.x >> 20u), extra.y >> 20u));
+  if (neg) {
+    let lo = ~bits.x + 1u;
+    let hi = ~bits.y + select(0u, 1u, lo == 0u);
+    bits = vec2u(lo, hi);
+  }
+  return Axis(bitcast<i32>((bits.y << 12u) | (bits.x >> 20u)), f32(bits.x & 1048575u) * (1.0 / 1048576.0));
+}
+fn axisAdd(a: Axis, b: Axis) -> Axis {
+  var i = a.i + b.i;
+  var f = a.f + b.f;
+  if (f >= 1.0) { f -= 1.0; i += 1; }
+  return Axis(i, f);
+}
+fn axisAddf(a: Axis, c: f32) -> Axis {
+  let n = i32(floor(c));
+  return axisAdd(a, Axis(n, c - f32(n)));
+}
+fn axisSub(q: f32, si: i32, sf: f32) -> Axis {
+  let qi = i32(floor(q));
+  var i = qi - si;
+  var f = (q - f32(qi)) - sf;
+  if (f < 0.0) { f += 1.0; i -= 1; }
+  return Axis(i, f);
+}
+fn posScale(p: Pos, sx: f32, sy: f32) -> Pos { return Pos(axisMul(p.x, sx), axisMul(p.y, sy)); }
+fn posAdd(p: Pos, v: vec2f) -> Pos { return Pos(axisAddf(p.x, v.x), axisAddf(p.y, v.y)); }
+fn posRot(p: Pos) -> Pos {
+  return Pos(
+    axisAdd(axisMul(p.x, 0.8), axisMul(p.y, -0.6)),
+    axisAdd(axisMul(p.x, 0.6), axisMul(p.y, 0.8))
+  );
+}
+fn posNoise(p: Pos) -> f32 { return gnoiseCell(vec2i(p.x.i, p.y.i), vec2f(p.x.f, p.y.f)); }
+fn layerPos(q: vec2f, low: bool) -> Pos {
+  let ix = select(F.cloudKm.z, F.cloudKm.x, low);
+  let iz = select(F.cloudKm.w, F.cloudKm.y, low);
+  let fx = select(F.cloudHigh.x, F.cloudWind.x, low);
+  let fz = select(F.cloudHigh.y, F.cloudWind.y, low);
+  return Pos(axisSub(q.x, ix, fx), axisSub(q.y, iz, fz));
+}
+fn noiseAt(world: Pos, sx: f32, sy: f32, offset: vec2f) -> f32 {
+  return posNoise(posAdd(posScale(world, sx, sy), offset));
+}
+fn cloudFbmHp(p: Pos, fp: f32, oct: i32, billow: f32) -> f32 {
+  var s = 0.0;
+  var a = 0.5;
+  var q = p;
+  var freq = 1.0;
+  for (var i = 0; i < oct; i++) {
+    let w = 1.0 - smoothstep(0.08, 0.28, fp * freq);
+    var n = posNoise(q);
+    if (i >= 2) { n = mix(n, abs(n) * 2.0 - 0.38, billow); }
+    s += a * n * w;
+    q = posAdd(posScale(posRot(q), 2.03, 2.03), vec2f(13.1, 7.7));
+    freq *= 2.03;
+    a *= 0.5;
+  }
+  return s;
+}
 fn lowEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let scale = max(F.cloudShape.x, 0.1);
   // Scroll and evolution are integrated offsets, so a wind change cannot teleport the layer.
-  let world = q - F.cloudWind.xy;
-  var p = world * (0.38 / scale);
+  let world = layerPos(q, true);
+  let k = 0.38 / scale;
+  var p = posScale(world, k, k);
   let morphT = F.cloudWind.w;
   // Detail churns several times per large-mass generation.
   let detail = morphFlow(morphT * 6.0, 17u);
   let w = vec2f(
-    gnoise(p * 0.3 + vec2f(1.7, 9.2) + detail),
-    gnoise(p * 0.3 + vec2f(8.3, 2.8) + vec2f(detail.y, -detail.x))
+    noiseAt(p, 0.3, 0.3, detail + vec2f(1.7, 9.2)),
+    noiseAt(p, 0.3, 0.3, vec2f(detail.y, -detail.x) + vec2f(8.3, 2.8))
   );
-  p += w * 1.4;
+  p = posAdd(p, w * 1.4);
   // slightly elongated cells (cloud streets), mildly billowy small scales for ragged edges
-  let base = cloudFbm(p * vec2f(1.0, 1.7), fp * 0.65 / scale, oct, 0.35) * 1.3 + 0.5;
+  let base = cloudFbmHp(posScale(p, 1.0, 1.7), fp * 0.65 / scale, oct, 0.35) * 1.3 + 0.5;
   let lf = 0.05 / scale;
   let form = morphFlow(morphT * 2.0, 29u);
   let lw = vec2f(
-    gnoise(world * (lf * 0.5) + form + vec2f(4.2, 1.1)),
-    gnoise(world * (lf * 0.5) + vec2f(form.y, -form.x) + vec2f(8.8, 2.4))
+    noiseAt(world, lf * 0.5, lf * 0.5, form + vec2f(4.2, 1.1)),
+    noiseAt(world, lf * 0.5, lf * 0.5, vec2f(form.y, -form.x) + vec2f(8.8, 2.4))
   );
-  let large = gnoise(world * lf + lw * 0.9 + vec2f(3.1, 1.3)) * 0.7;
+  let large = noiseAt(world, lf, lf, lw * 0.9 + vec2f(3.1, 1.3)) * 0.7;
   return base + large - (1.0 - F.cloudP.y);
 }
 fn lowSoft(fp: f32) -> f32 { return (0.38 + min(fp * 0.65, 1.0) * 0.3) * F.cloudShape.z; }
@@ -304,19 +391,19 @@ fn lowDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
 }
 fn highEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let scale = max(F.cloudHigh.w, 0.1);
-  let world = q - F.cloudHigh.xy;
+  let world = layerPos(q, false);
   let morphT = F.cloudWind.w;
   // altostratus deck: smooth, slightly fibrous, and slower to reshape than the cumulus
   let fiber = morphFlow(morphT * 2.0, 47u);
-  let p = CLOUD_ROT * (world * vec2f(0.09, 0.20) / scale) + fiber;
-  let n = cloudFbm(p, fp * 0.2 / scale, oct, 0.0) * 1.25 + 0.5;
+  let p = posAdd(posRot(posScale(world, 0.09 / scale, 0.20 / scale)), fiber);
+  let n = cloudFbmHp(p, fp * 0.2 / scale, oct, 0.0) * 1.25 + 0.5;
   let hf = 0.012 / scale;
   let form = morphFlow(morphT, 71u);
   let hw = vec2f(
-    gnoise(world * (hf * 0.45) + form * 0.8 + vec2f(2.2, 6.1)),
-    gnoise(world * (hf * 0.45) + vec2f(form.y, -form.x) * 0.8 + vec2f(7.4, 1.6))
+    noiseAt(world, hf * 0.45, hf * 0.45, form * 0.8 + vec2f(2.2, 6.1)),
+    noiseAt(world, hf * 0.45, hf * 0.45, vec2f(form.y, -form.x) * 0.8 + vec2f(7.4, 1.6))
   );
-  let big = gnoise(world * hf + hw * 0.7 + vec2f(7.0, 3.0)) * 0.6;
+  let big = noiseAt(world, hf, hf, hw * 0.7 + vec2f(7.0, 3.0)) * 0.6;
   return n + big - (1.0 - F.atmo.z);
 }
 fn highSoft(fp: f32) -> f32 { return (0.85 + min(fp * 0.2, 1.0) * 0.3) * F.cloudShape.z; }

@@ -328,7 +328,7 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(544, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(560, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
@@ -594,7 +594,8 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(136);
+  const frameF = new Float32Array(140);
+  const frameI = new Int32Array(frameF.buffer);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -959,17 +960,15 @@ async function main() {
     }
     if (key === 'rainIntensity') showRainReadout();
   }
-  function updateDynamicClouds() {
-    if (P.cloudMode !== 'dynamic') return;
-    const when = skyUsesPlace() && skyInstant ? skyInstant : new Date();
+  // A deterministic, location-dependent weather pattern. Synoptic systems evolve over
+  // several simulated days, so Date and time is repeatable and Time lapse advances the
+  // weather with its sky instead of running a 25-minute real-time weather cycle.
+  function weatherField(when) {
     const hour = when.getHours() + when.getMinutes() / 60 + when.getSeconds() / 3600;
     const sunY = skyUsesPlace() && liveSky ? liveSky.sunDirection[1] : Math.sin(manualSunElev() * D2R);
     const elev = Math.asin(Math.max(-1, Math.min(1, sunY))) / D2R;
     const daylight = weatherSmooth(-6, 10, elev);
     const afternoon = Math.exp(-((hour - 15.2) ** 2) / 12);
-    // A deterministic, location-dependent weather pattern. Synoptic systems evolve over
-    // several simulated days, so Date and time is repeatable and Time lapse advances the
-    // weather with its sky instead of running a 25-minute real-time weather cycle.
     const weatherHours = when.getTime() / 3600000;
     const placePhase = skyLocation
       ? (skyLocation.latitude * 0.73 + skyLocation.longitude * 0.37) * D2R
@@ -977,6 +976,36 @@ async function main() {
     const wave = (period, phase = 0) => Math.sin(weatherHours * Math.PI * 2 / period + placePhase + phase);
     const moisture = Math.max(0, Math.min(1, 0.48 + 0.30 * wave(92) + 0.16 * wave(37, 1.9)));
     const front = 0.5 + 0.5 * wave(137, -0.8);
+    return { elev, daylight, afternoon, wave, moisture, front };
+  }
+  // Showers on the time-lapse clock. Moist spells last a couple of days, a passing band
+  // rains for a few hours, and the dry gaps in between are longer. Afternoon convection
+  // inside a wet band becomes a thunderstorm. The same instant always makes the same rain.
+  function simulatedRain(when) {
+    const { wave, moisture, front, afternoon, daylight } = weatherField(when);
+    const mass = weatherSmooth(0.52, 0.72, moisture * 0.85 + front * 0.15);
+    const band = 0.5 + 0.5 * wave(17, 0.7);
+    const cell = 0.5 + 0.5 * wave(6.5, -1.1);
+    const pass = weatherSmooth(0.58, 0.78, band * 0.72 + cell * 0.28);
+    const wet = mass * pass;
+    const pulse = 0.5 + 0.5 * wave(3.4, 1.2);
+    let intensity = wet * (0.2 + 0.75 * wet * (0.3 + 0.7 * pulse));
+    const convective = wet * afternoon * daylight * weatherSmooth(0.5, 0.85, cell) * weatherSmooth(0.4, 0.8, moisture);
+    let style = 'rain';
+    let lightning = 0;
+    if (convective > 0.45 && intensity > 0.08) {
+      style = 'thunderstorm';
+      intensity = Math.min(1, Math.max(intensity, 0.55 + 0.4 * convective));
+      lightning = Math.min(1, 0.45 + 0.5 * convective);
+    }
+    intensity = Math.max(0, Math.min(1, intensity));
+    if (intensity < 0.04) return { rain: false, intensity: 0, style: 'rain', lightning: 0 };
+    return { rain: true, intensity, style, lightning };
+  }
+  function updateDynamicClouds() {
+    if (P.cloudMode !== 'dynamic') return;
+    const when = skyUsesPlace() && skyInstant ? skyInstant : new Date();
+    const { elev, daylight, afternoon, wave, moisture, front } = weatherField(when);
     const convection = afternoon * daylight;
     const lowDir = (225 + 65 * wave(121, 0.4) + 25 * wave(43, -1.2) + 360) % 360;
     const lowWind = 3 + 10 * front + 4 * (0.5 + 0.5 * wave(31, 2.3));
@@ -1088,8 +1117,15 @@ async function main() {
     f[106] = P.starTwinkle; f[107] = day ? 0 : P.nightBrightness;
     const pole = dynamic ? liveSky.poleDirection : [0, 1, 0];
     f[108] = pole[0]; f[109] = pole[1]; f[110] = pole[2]; f[111] = 0;
-    f[112] = cloudScroll.lowX; f[113] = cloudScroll.lowZ; f[114] = 0; f[115] = cloudScroll.evolve;
-    f[116] = cloudScroll.highX; f[117] = cloudScroll.highZ; f[118] = 0; f[119] = P.highCloudScale;
+    // Integer kilometres stay exact in the uniform. A single f32 scroll quantizes once a
+    // time lapse has carried the clouds far enough, and the field then steps instead of gliding.
+    const [lowIx, lowFx] = splitKm(cloudScroll.lowX);
+    const [lowIz, lowFz] = splitKm(cloudScroll.lowZ);
+    const [highIx, highFx] = splitKm(cloudScroll.highX);
+    const [highIz, highFz] = splitKm(cloudScroll.highZ);
+    f[112] = lowFx; f[113] = lowFz; f[114] = 0; f[115] = cloudScroll.evolve;
+    f[116] = highFx; f[117] = highFz; f[118] = 0; f[119] = P.highCloudScale;
+    frameI[136] = lowIx; frameI[137] = lowIz; frameI[138] = highIx; frameI[139] = highIz;
     f[120] = P.cloudScale; f[121] = P.highCloudAltitude; f[122] = P.cloudSoftness; f[123] = 0;
     f[124] = P.cloudDensity; f[125] = P.highCloudDensity;
     f[126] = P.cloudSilver; f[127] = P.cloudAmbient;
@@ -1144,6 +1180,9 @@ async function main() {
   let hurricaneManual = null;
   let rainManual = null;
   let rainCloudManual = null;
+  let lapseRainManual = null;
+  let rainIntensityShown = '';
+  const LAPSE_RAIN = ['rain', 'rainIntensity', 'rainStyle', 'rainLightning'];
   const HURRICANE_OCEAN = ['windSpeed', 'swellHs', 'choppy', 'foam', 'haze'];
   // A raining sky is a nimbostratus deck: low, broad, soft, and gray, with the
   // upper sheet closed so fair-weather blue does not show through the gaps.
@@ -1167,6 +1206,10 @@ async function main() {
     if (P.skyMode !== 'lapse') return 1;
     const pace = Math.max(1, Number(P.lapsePace) || 20);
     return pace * 60;
+  }
+  function splitKm(v) {
+    const i = Math.floor(v);
+    return [i, v - i];
   }
   function advanceCloudMotion(dt) {
     if (!P.cloudMotion || dt <= 0) return;
@@ -1460,6 +1503,7 @@ async function main() {
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
     if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
     if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    if (lapseRainManual && Object.hasOwn(lapseRainManual, key)) return lapseRainManual[key];
     if (rainManual && Object.hasOwn(rainManual, key)) return rainManual[key];
     return P[key];
   }
@@ -2207,6 +2251,55 @@ async function main() {
     control.output.textContent = rainWord(P.rainIntensity);
     control.output.title = Number(P.rainIntensity).toFixed(2);
   }
+  function presentRainIntensity() {
+    const control = controls.get('rainIntensity');
+    if (!control?.output) return;
+    const step = Number(control.input.step) || 0.01;
+    const shown = Math.round(P.rainIntensity / step) * step;
+    const text = String(Number(shown.toFixed(4)));
+    const word = rainWord(P.rainIntensity);
+    if (rainIntensityShown === text && control.output.textContent === word) return;
+    rainIntensityShown = text;
+    control.input.value = text;
+    control.output.textContent = word;
+    control.output.title = Number(P.rainIntensity).toFixed(2);
+  }
+  function captureLapseRain() {
+    if (lapseRainManual) return;
+    lapseRainManual = {};
+    for (const key of LAPSE_RAIN) lapseRainManual[key] = P[key];
+    // Follow weather card displays the live observation. Keep the intensity and style
+    // the user set, which rainManual is holding while that follow is on.
+    if (rainManual) {
+      lapseRainManual.rainIntensity = rainManual.rainIntensity;
+      lapseRainManual.rainStyle = rainManual.rainStyle;
+    }
+  }
+  function releaseLapseRain() {
+    if (!lapseRainManual) return;
+    const saved = lapseRainManual;
+    lapseRainManual = null;
+    rainIntensityShown = '';
+    showDrivenSetting('rain', saved.rain);
+    showDrivenSetting('rainIntensity', saved.rainIntensity);
+    showDrivenChoice('rainStyle', saved.rainStyle);
+    showDrivenSetting('rainLightning', saved.rainLightning);
+    applyRainFollow();
+  }
+  function updateLapseRain() {
+    if (P.skyMode !== 'lapse' || !lapseRainManual) return;
+    const when = lapseInstant();
+    if (!when) return;
+    const next = simulatedRain(when);
+    const rainChanged = P.rain !== next.rain;
+    const styleChanged = P.rainStyle !== next.style;
+    P.rainIntensity = next.intensity;
+    presentRainIntensity();
+    if (Math.abs(P.rainLightning - next.lightning) >= 0.005) showDrivenSetting('rainLightning', next.lightning);
+    if (styleChanged) showDrivenChoice('rainStyle', next.style);
+    if (rainChanged) showDrivenSetting('rain', next.rain);
+    if (rainChanged || styleChanged) applyHurricaneState();
+  }
   function showDrivenChoice(key, value) {
     P[key] = value;
     const control = controls.get(key);
@@ -2311,7 +2404,7 @@ async function main() {
     if (floor > P.rainLightning) showDrivenSetting('rainLightning', floor);
   }
   function updateFollowedRain() {
-    if (!(P.rain && P.rainFollow) || !weatherWidget) return;
+    if (P.skyMode === 'lapse' || !(P.rain && P.rainFollow) || !weatherWidget) return;
     const obs = weatherWidget.getObservation();
     if (!obs) return;
     const mapped = rainFromObservation(obs);
@@ -2323,17 +2416,22 @@ async function main() {
     }
   }
   function applyRainFollow() {
-    const follow = Boolean(P.rain && P.rainFollow);
-    if (follow && !rainManual) rainManual = { rainIntensity: P.rainIntensity, rainStyle: P.rainStyle };
-    if (!follow && rainManual) {
-      const saved = rainManual;
-      rainManual = null;
-      showDrivenSetting('rainIntensity', saved.rainIntensity);
-      showDrivenChoice('rainStyle', saved.rainStyle);
+    const lapse = P.skyMode === 'lapse';
+    const follow = Boolean(P.rain && P.rainFollow) && !lapse;
+    if (!lapse) {
+      if (follow && !rainManual) rainManual = { rainIntensity: P.rainIntensity, rainStyle: P.rainStyle };
+      if (!follow && rainManual) {
+        const saved = rainManual;
+        rainManual = null;
+        showDrivenSetting('rainIntensity', saved.rainIntensity);
+        showDrivenChoice('rainStyle', saved.rainStyle);
+      }
     }
-    setSettingLocked('rainFollow', !P.rain);
-    setSettingLocked('rainIntensity', follow);
-    setSettingLocked('rainStyle', follow);
+    setSettingLocked('rain', lapse);
+    setSettingLocked('rainFollow', lapse || !P.rain);
+    setSettingLocked('rainIntensity', lapse || follow);
+    setSettingLocked('rainStyle', lapse || follow);
+    setSettingLocked('rainLightning', lapse);
     if (follow) updateFollowedRain();
     applyHurricaneState();
   }
@@ -2387,7 +2485,20 @@ async function main() {
     setSettingVisible('skyWhen', dated);
     setSettingVisible('skyLapseStart', lapse);
     setSettingVisible('lapsePace', lapse);
-    if (lapse) resetTimeLapse();
+    if (lapse) {
+      resetTimeLapse();
+      captureLapseRain();
+      setSettingLocked('rain', true);
+      setSettingLocked('rainFollow', true);
+      setSettingLocked('rainIntensity', true);
+      setSettingLocked('rainStyle', true);
+      setSettingLocked('rainLightning', true);
+      // Cloud setup snapshots the manual deck on startup. Driving rain before that
+      // snapshot would store the rain clouds as the user's clouds.
+      if (cloudManual || P.cloudMode !== 'dynamic') updateLapseRain();
+    } else {
+      releaseLapseRain();
+    }
     if (dated && !P.skyWhen) {
       P.skyWhen = localDateTimeValue();
       const when = controls.get('skyWhen');
@@ -2728,6 +2839,7 @@ async function main() {
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
     if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) hurricaneManual[key] = P[key];
     if (rainManual && Object.hasOwn(rainManual, key)) rainManual[key] = P[key];
+    if (lapseRainManual && Object.hasOwn(lapseRainManual, key)) lapseRainManual[key] = P[key];
     if (rainCloudManual && Object.hasOwn(rainCloudManual, key)) rainCloudManual[key] = P[key];
     if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
     if (skyUsesPlace() && MOON_DRIVEN.includes(key)) updateDrivenMoon();
@@ -2780,6 +2892,7 @@ async function main() {
     hurricaneManual = null;
     rainManual = null;
     rainCloudManual = null;
+    lapseRainManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
     Object.assign(cam, CAM_DEFAULT);
     headingExplicit = true;
@@ -2991,12 +3104,13 @@ async function main() {
         (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}`;
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
+    advanceTimeLapse(dt);
+    updateLapseRain();
     updateDynamicClouds(dt);
     updateFollowedRain();
     updateHurricaneSea();
     updateRainClouds();
     updateDynamicStars();
-    advanceTimeLapse(dt);
     if (fixedDt) dt = fixedDt;
     advanceCloudMotion(dt);
     updateCamera(dt);
