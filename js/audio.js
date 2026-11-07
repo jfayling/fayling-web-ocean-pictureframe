@@ -79,6 +79,12 @@ export function createOceanAudio(button, onChange) {
   let crackBuffer = null;
   let rumbleBuffer = null;
   const thunderQueue = [];
+  const liveBolts = [];
+  // Wall-clock thunder waits on sound travel, then rumbles for several seconds.
+  // Time lapse can finish a whole cell in that span, so both are squeezed with the
+  // sky pace. 1 keeps a real-time sky on physical delay.
+  let thunderDelayScale = 1;
+  let thunderRumbleScale = 1;
   let enabled = false;
   let oceanAudible = true;
   let rainAudible = true;
@@ -209,6 +215,7 @@ export function createOceanAudio(button, onChange) {
     const distanceFade = 1 / (1 + Math.max(0, altitude - 3) / 85);
     oceanAudible = params.oceanPlayback !== false;
     rainAudible = params.rainPlayback !== false;
+    applyLapseThunder(params);
     const volume = clamp(params.audioVolume, 0, 1) * distanceFade;
     const rumbleLevel = clamp(params.audioRumble ?? 1, 0, 2);
     const washLevel = clamp(params.audioWash ?? 1, 0, 2);
@@ -230,10 +237,11 @@ export function createOceanAudio(button, onChange) {
 
   function updateRain(now, dt, camera, params) {
     if (!rainBus) return;
+    reapBolts(now);
     if (!rainAudible) {
       rainBus.gain.setTargetAtTime(0, now, 0.12);
       thunderGain?.gain.setTargetAtTime(0, now, 0.08);
-      thunderQueue.length = 0;
+      silenceThunder(now);
       return;
     }
     thunderGain?.gain.setTargetAtTime(0.9, now, 0.1);
@@ -260,13 +268,51 @@ export function createOceanAudio(button, onChange) {
     const windAmt = intensity * (0.04 + storm * 0.12 + hurricane * 0.55) * windLevel * gust;
     rainWind.gain.gain.setTargetAtTime(windAmt, now, 0.3);
     rainWind.tail.frequency.setTargetAtTime(140 + hurricane * 90 + gust * 40, now, 0.4);
+    const lightning = clamp(params.rainLightning ?? 0, 0, 1);
+    const storming = intensity > 0.02 && lightning > 0.01;
+    // A queued boom is still real seconds away. Once the lapse storm is over,
+    // drop it and fade anything already sounding so it leaves with the rain.
+    if (params.skyMode === 'lapse' && !storming) silenceThunder(now);
     flushThunder(now, camera, params);
   }
 
-  function strike(azimuth, distance) {
+  function applyLapseThunder(params) {
+    if (!params || params.skyMode !== 'lapse') {
+      thunderDelayScale = 1;
+      thunderRumbleScale = 1;
+      return;
+    }
+    const pace = Math.max(1, Number(params.lapsePace) || 20);
+    thunderDelayScale = clamp(4 / pace, 0.05, 1);
+    thunderRumbleScale = clamp(8 / pace, 0.18, 1);
+  }
+
+  function silenceThunder(now) {
+    thunderQueue.length = 0;
+    for (const bolt of liveBolts) {
+      bolt.gain.gain.setTargetAtTime(0, now, 0.1);
+      bolt.until = Math.min(bolt.until, now + 0.55);
+    }
+  }
+
+  function reapBolts(now) {
+    for (let i = liveBolts.length - 1; i >= 0; i--) {
+      if (now < liveBolts[i].until) continue;
+      try { liveBolts[i].gain.disconnect(); } catch { /* already gone */ }
+      liveBolts.splice(i, 1);
+    }
+  }
+
+  function strike(azimuth, distance, params) {
     if (!ctx || !enabled || !rainAudible) return;
-    const delay = clamp(distance, 40, 2800) / 343;
-    thunderQueue.push({ azimuth, distance: clamp(distance, 40, 2800), at: ctx.currentTime + delay });
+    if (params) applyLapseThunder(params);
+    const metres = clamp(distance, 40, 2800);
+    thunderQueue.push({
+      azimuth,
+      distance: metres,
+      at: ctx.currentTime + (metres / 343) * thunderDelayScale,
+      rumbleScale: thunderRumbleScale,
+    });
   }
 
   function flushThunder(now, camera, params) {
@@ -334,9 +380,15 @@ export function createOceanAudio(button, onChange) {
 
   function playThunder(now, bolt, yaw, snap, rumbleLevel) {
     const near = 1 / (1 + bolt.distance / 700);
+    const rumbleScale = bolt.rumbleScale ?? 1;
+    const boltGain = ctx.createGain();
+    boltGain.gain.value = 1;
+    boltGain.connect(thunderGain);
+    const sustain = Math.max(0.4, (2.2 + (1 - near) * 3.2) * rumbleScale);
+    liveBolts.push({ gain: boltGain, until: now + sustain + 0.15 });
     const panNode = ctx.createStereoPanner();
     panNode.pan.value = clamp(Math.sin(bolt.azimuth - yaw) * 0.85, -1, 1);
-    panNode.connect(thunderGain);
+    panNode.connect(boltGain);
 
     const crackOut = ctx.createGain();
     const distance = ctx.createBiquadFilter();
@@ -356,14 +408,15 @@ export function createOceanAudio(button, onChange) {
     rumbleFilter.type = 'lowpass';
     rumbleFilter.frequency.value = 90 + near * 180;
     const rumbleAmp = Math.max(0.001, (0.2 + (1 - near) * 0.35 + near * 0.25) * rumbleLevel);
+    const attack = Math.max(0.06, (0.25 + (1 - near) * 0.45) * Math.max(rumbleScale, 0.4));
     rumbleGain.gain.setValueAtTime(0.001, now);
-    rumbleGain.gain.exponentialRampToValueAtTime(rumbleAmp, now + 0.25 + (1 - near) * 0.45);
-    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + 2.2 + (1 - near) * 3.2);
+    rumbleGain.gain.exponentialRampToValueAtTime(rumbleAmp, now + attack);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + sustain);
     rumble.connect(rumbleFilter);
     rumbleFilter.connect(rumbleGain);
     rumbleGain.connect(panNode);
     rumble.start(now);
-    rumble.stop(now + 6);
+    rumble.stop(now + sustain + 0.05);
   }
 
   if (button) button.addEventListener('click', (event) => {

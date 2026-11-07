@@ -462,7 +462,7 @@ async function main() {
   let rainPrevX = null;
   let rainPrevZ = null;
   let boltFlash = 0, boltX = 1, boltZ = 0, boltSeed = 1, boltOn = 0;
-  let boltLife = 0, boltDur = 0.2, boltPower = 1, nextBolt = 2.5;
+  let boltLife = 0, boltDur = 0.2, boltPower = 1, nextBolt = 2.5, lightningQuiet = true;
 
   const bgOcean = [0, 1].map((i) => [0, 1].map((r) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
@@ -3127,7 +3127,17 @@ async function main() {
       boltFlash = 0;
       boltOn = 0;
     }
-    if (rate < 0.01) return;
+    if (rate < 0.01) {
+      lightningQuiet = true;
+      return;
+    }
+    if (lightningQuiet && P.skyMode === 'lapse') {
+      const pace = Math.max(1, Number(P.lapsePace) || 20);
+      // The bolt timer is wall-clock. A fast lapse can cross the whole cell
+      // before it fires, so the boom lands after the rain. Strike while it is still up.
+      nextBolt = Math.min(nextBolt, 0.15 + 1.5 / pace);
+    }
+    lightningQuiet = false;
     nextBolt -= dt;
     if (nextBolt > 0) return;
     const mean = Math.max(1.4, 18 * (1 - rate) + 1.5);
@@ -3141,7 +3151,7 @@ async function main() {
     boltPower = 0.65 + Math.random() * 0.55;
     boltFlash = boltPower;
     boltOn = 1;
-    oceanAudio.strike(az, 120 + Math.random() * 2400);
+    oceanAudio.strike(az, 120 + Math.random() * 2400, P);
   }
   function writeRainUniforms(dt) {
     const amount = rainAmount();
