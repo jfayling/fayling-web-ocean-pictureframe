@@ -22,6 +22,52 @@ function condition(code) {
   return ['Current conditions', 'cloud'];
 }
 
+// Open-Meteo uses WMO weather codes. Each raining code maps to one static rain setup:
+// intensity, drop size on the surface, and lightning. Snow and dry codes stay off.
+function rainLook(intensity, ripples, splashes, lightning = 0, style = 'rain') {
+  return { rain: true, intensity, style, lightning, ripples, splashes };
+}
+function dryRain() {
+  return { rain: false, intensity: 0, style: 'rain', lightning: 0, ripples: 0, splashes: 0 };
+}
+const RAIN_BY_CODE = {
+  51: rainLook(0.10, 0.45, 0.22), // light drizzle
+  53: rainLook(0.16, 0.62, 0.34), // moderate drizzle
+  55: rainLook(0.24, 0.8, 0.48), // dense drizzle
+  56: rainLook(0.12, 0.5, 0.26), // light freezing drizzle
+  57: rainLook(0.28, 0.85, 0.52), // dense freezing drizzle
+  61: rainLook(0.34, 1.0, 0.85), // slight rain
+  63: rainLook(0.52, 1.25, 1.1), // moderate rain
+  65: rainLook(0.74, 1.55, 1.45, 0.08), // heavy rain
+  66: rainLook(0.36, 1.0, 0.85), // light freezing rain
+  67: rainLook(0.8, 1.6, 1.5, 0.12), // heavy freezing rain
+  80: rainLook(0.36, 1.15, 1.05), // slight rain showers
+  81: rainLook(0.58, 1.4, 1.3, 0.1), // moderate rain showers
+  82: rainLook(0.9, 1.75, 1.7, 0.28), // violent rain showers
+  95: rainLook(0.7, 1.5, 1.45, 0.65, 'thunderstorm'),
+  96: rainLook(0.84, 1.7, 1.65, 0.82, 'thunderstorm'), // thunderstorm, slight hail
+  99: rainLook(0.97, 1.9, 1.85, 0.95, 'thunderstorm'), // thunderstorm, heavy hail
+};
+const DRY_WEATHER_CODES = new Set([0, 1, 2, 3, 45, 48, 71, 73, 75, 77, 85, 86]);
+
+function rainLookFromAmount(amount, metric) {
+  const mm = metric ? amount : amount * 25.4;
+  if (mm < 0.3) return RAIN_BY_CODE[51];
+  if (mm < 2.5) return RAIN_BY_CODE[61];
+  if (mm < 7.6) return RAIN_BY_CODE[63];
+  return RAIN_BY_CODE[65];
+}
+
+export function rainPresetForObservation(obs) {
+  if (!obs) return null;
+  const code = Number(obs.code);
+  if (RAIN_BY_CODE[code]) return { ...RAIN_BY_CODE[code] };
+  if (DRY_WEATHER_CODES.has(code)) return dryRain();
+  const amount = Number(obs.precipitation);
+  if (Number.isFinite(amount) && amount > 0) return { ...rainLookFromAmount(amount, obs.metric !== false) };
+  return dryRain();
+}
+
 function weatherIcon(kind, day) {
   const sun = '<circle cx="31" cy="28" r="11" fill="currentColor"/><g stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M31 8v-5m0 50v-5M11 28H6m50 0h-5M17 14l-4-4m36 36-4-4m0-28 4-4M13 46l4-4"/></g>';
   const moon = '<path d="M40 8a21 21 0 1 0 9 37A18 18 0 0 1 40 8Z" fill="currentColor"/>';
@@ -239,6 +285,7 @@ export function createWeatherWidget(root, status, onObservation) {
       code: data.current.weather_code,
       precipitation: data.current.precipitation,
       chance: data.hourly?.chances?.[0] ?? 0,
+      metric: lastConfig?.weatherUnit === 'celsius',
     };
   }
 

@@ -11,7 +11,7 @@ import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
 import { createOceanAudio } from './audio.js';
 import { celestialState } from './astronomy.js';
 import { createStarMapData, STAR_MAP_WIDTH, STAR_MAP_HEIGHT } from './star-catalog.js';
-import { createWeatherWidget } from './weather.js';
+import { createWeatherWidget, rainPresetForObservation } from './weather.js';
 import { acceptedPlace, rememberChoice, resolvePlace, suggestPlaces } from './place.js';
 
 const qs = new URLSearchParams(location.search);
@@ -113,6 +113,7 @@ export const P = {
   weatherWind: true,
   weatherForecast: true,
   weatherAlerts: true,
+  rainMode: 'static',
   rain: false,
   rainIntensity: 0.5,
   rainStyle: 'rain',
@@ -1163,7 +1164,7 @@ async function main() {
     'rain', 'rainFollow',
     'moon', 'stars', 'cloudMotion']);
   const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
-    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode', 'rainStyle']);
+    'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode', 'rainMode', 'rainStyle']);
   const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
     'cloudMotion', 'cloudWindSpeed', 'cloudWindDir', 'cloudEvolution',
@@ -1179,10 +1180,13 @@ async function main() {
   let moonManual = null;
   let hurricaneManual = null;
   let rainManual = null;
+  let dynamicRainManual = null;
+  let weatherWidget = null;
   let rainCloudManual = null;
   let lapseRainManual = null;
   let rainIntensityShown = '';
   const LAPSE_RAIN = ['rain', 'rainIntensity', 'rainStyle', 'rainLightning'];
+  const RAIN_DRIVEN = ['rain', 'rainIntensity', 'rainStyle', 'rainLightning', 'rainRipples', 'rainSplashes'];
   const HURRICANE_OCEAN = ['windSpeed', 'swellHs', 'choppy', 'foam', 'haze'];
   // A raining sky is a nimbostratus deck: low, broad, soft, and gray, with the
   // upper sheet closed so fair-weather blue does not show through the gaps.
@@ -1402,7 +1406,12 @@ async function main() {
         ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
         ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
       ] },
-      { title: 'Rain', groups: [
+      { title: 'Rain', settings: [
+        ['rainMode', 'Rain behavior', 'select', [
+          ['static', 'Static'],
+          ['dynamic', 'Dynamic / real-time'],
+        ]],
+      ], groups: [
         { title: 'Weather', settings: [
           ['rain', 'Rain', 'toggle', 'On', 'Off'],
           ['rainIntensity', 'Intensity', 0, 1, 0.01, 'rain'],
@@ -1503,6 +1512,7 @@ async function main() {
     if (cloudManual && CLOUD_DRIVEN.includes(key)) return cloudManual[key];
     if (starManual && STAR_DRIVEN.includes(key)) return starManual[key];
     if (moonManual && MOON_DRIVEN.includes(key)) return moonManual[key];
+    if (dynamicRainManual && Object.hasOwn(dynamicRainManual, key)) return dynamicRainManual[key];
     if (lapseRainManual && Object.hasOwn(lapseRainManual, key)) return lapseRainManual[key];
     if (rainManual && Object.hasOwn(rainManual, key)) return rainManual[key];
     return P[key];
@@ -2050,7 +2060,6 @@ async function main() {
   aimControlsReady = true;
   applyShowInfo();
   applyClock();
-  applySkyMode();
   applyCloudMode();
   applyStarMode();
   setInterval(updateClock, 250);
@@ -2101,7 +2110,7 @@ async function main() {
     const token = ++statusToken;
     setTimeout(() => { if (token === statusToken) status.textContent = ''; }, 4000);
   }
-  const weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note, () => updateFollowedRain());
+  weatherWidget = createWeatherWidget(document.getElementById('weather-widget'), note, () => updateFollowedRain());
   document.getElementById('weather-widget').addEventListener('click', (event) => {
     if (event.target.closest('.weather-place')) openPlaceDialog('weatherZip');
   });
@@ -2110,7 +2119,7 @@ async function main() {
     layoutCompass();
   }
   applyWeather(true);
-  applyRainFollow();
+  applySkyMode();
   showRainReadout();
   addEventListener('resize', layoutCompass);
   const overlayLayout = new ResizeObserver(() => layoutCompass());
@@ -2264,27 +2273,27 @@ async function main() {
     control.output.textContent = word;
     control.output.title = Number(P.rainIntensity).toFixed(2);
   }
+  function manualRainValue(key) {
+    if (dynamicRainManual && Object.hasOwn(dynamicRainManual, key)) return dynamicRainManual[key];
+    if (rainManual && Object.hasOwn(rainManual, key)) return rainManual[key];
+    if (lapseRainManual && Object.hasOwn(lapseRainManual, key)) return lapseRainManual[key];
+    return P[key];
+  }
   function captureLapseRain() {
     if (lapseRainManual) return;
     lapseRainManual = {};
-    for (const key of LAPSE_RAIN) lapseRainManual[key] = P[key];
-    // Follow weather card displays the live observation. Keep the intensity and style
-    // the user set, which rainManual is holding while that follow is on.
-    if (rainManual) {
-      lapseRainManual.rainIntensity = rainManual.rainIntensity;
-      lapseRainManual.rainStyle = rainManual.rainStyle;
-    }
+    for (const key of LAPSE_RAIN) lapseRainManual[key] = manualRainValue(key);
   }
   function releaseLapseRain() {
     if (!lapseRainManual) return;
     const saved = lapseRainManual;
     lapseRainManual = null;
     rainIntensityShown = '';
+    if (P.rainMode === 'dynamic') return;
     showDrivenSetting('rain', saved.rain);
     showDrivenSetting('rainIntensity', saved.rainIntensity);
     showDrivenChoice('rainStyle', saved.rainStyle);
     showDrivenSetting('rainLightning', saved.rainLightning);
-    applyRainFollow();
   }
   function updateLapseRain() {
     if (P.skyMode !== 'lapse' || !lapseRainManual) return;
@@ -2380,45 +2389,89 @@ async function main() {
     if (on) updateHurricaneSea();
     updateRainClouds();
   }
-  function rainFromObservation(obs) {
-    const code = Number(obs.code) || 0;
-    const chance = Math.max(0, Math.min(1, (Number(obs.chance) || 0) / 100));
-    let intensity = 0;
-    let style = 'rain';
-    if (code >= 95) {
-      style = 'thunderstorm';
-      intensity = 0.62 + 0.28 * chance;
-    } else if (code >= 80 && code <= 82) {
-      intensity = code >= 82 ? 0.8 : code === 81 ? 0.55 : 0.4;
-    } else if (code >= 61 && code <= 67) {
-      intensity = code >= 65 ? 0.74 : code >= 63 ? 0.5 : 0.34;
-    } else if (code >= 51 && code <= 57) {
-      intensity = code >= 55 ? 0.22 : 0.1;
-    } else if ((Number(obs.precipitation) || 0) > 0 || chance > 0.6) {
-      intensity = 0.12;
-    }
-    return { intensity: Math.min(1, intensity), style };
-  }
   function raiseLightning(style) {
     const floor = style === 'hurricane' ? 0.85 : style === 'thunderstorm' ? 0.55 : 0;
     if (floor > P.rainLightning) showDrivenSetting('rainLightning', floor);
   }
+  function rainIsWeatherDriven() {
+    return P.rainMode === 'dynamic' && P.skyMode !== 'lapse' && P.weather;
+  }
+  function snapshotDynamicRain() {
+    if (dynamicRainManual) return;
+    dynamicRainManual = {};
+    for (const key of RAIN_DRIVEN) dynamicRainManual[key] = manualRainValue(key);
+  }
+  function restoreDynamicRain() {
+    if (!dynamicRainManual) return;
+    const saved = dynamicRainManual;
+    dynamicRainManual = null;
+    rainIntensityShown = '';
+    if (P.skyMode === 'lapse') {
+      if (lapseRainManual) {
+        for (const key of LAPSE_RAIN) lapseRainManual[key] = saved[key];
+      }
+      showDrivenSetting('rainRipples', saved.rainRipples);
+      showDrivenSetting('rainSplashes', saved.rainSplashes);
+      return;
+    }
+    for (const key of RAIN_DRIVEN) {
+      if (key === 'rainStyle') showDrivenChoice(key, saved[key]);
+      else showDrivenSetting(key, saved[key]);
+    }
+  }
+  function applyRainPreset(next) {
+    if (!next) return;
+    const rainChanged = P.rain !== next.rain;
+    const styleChanged = P.rainStyle !== next.style;
+    if (Math.abs(P.rainIntensity - next.intensity) >= 0.005) showDrivenSetting('rainIntensity', next.intensity);
+    if (Math.abs(P.rainRipples - next.ripples) >= 0.005) showDrivenSetting('rainRipples', next.ripples);
+    if (Math.abs(P.rainSplashes - next.splashes) >= 0.005) showDrivenSetting('rainSplashes', next.splashes);
+    if (Math.abs(P.rainLightning - next.lightning) >= 0.005) showDrivenSetting('rainLightning', next.lightning);
+    if (styleChanged) showDrivenChoice('rainStyle', next.style);
+    if (rainChanged) showDrivenSetting('rain', next.rain);
+    if (rainChanged || styleChanged) applyHurricaneState();
+  }
+  function syncRainModeControl() {
+    const control = controls.get('rainMode');
+    const option = control?.input?.querySelector('option[value="dynamic"]');
+    const skyDynamic = P.skyMode === 'dynamic';
+    if (option) {
+      option.disabled = !P.weather && !skyDynamic;
+      option.title = option.disabled ? 'Turn on the weather widget first' : '';
+    }
+    if (control?.input) {
+      control.input.title = skyDynamic
+        ? 'Dynamic sky keeps rain in real-time mode'
+        : P.skyMode === 'lapse' ? 'Time lapse drives the rain' : '';
+    }
+    setSettingLocked('rainMode', skyDynamic || P.skyMode === 'lapse');
+    const weather = controls.get('weather');
+    if (weather?.input) weather.input.title = skyDynamic ? 'Dynamic sky keeps weather on so rain can follow it' : '';
+    setSettingLocked('weather', skyDynamic);
+  }
   function updateFollowedRain() {
-    if (P.skyMode === 'lapse' || !(P.rain && P.rainFollow) || !weatherWidget) return;
+    if (P.skyMode === 'lapse' || !weatherWidget) return;
     const obs = weatherWidget.getObservation();
     if (!obs) return;
-    const mapped = rainFromObservation(obs);
-    if (Math.abs(P.rainIntensity - mapped.intensity) > 0.02) showDrivenSetting('rainIntensity', mapped.intensity);
-    if (P.rainStyle !== mapped.style) {
-      showDrivenChoice('rainStyle', mapped.style);
-      raiseLightning(mapped.style);
+    const preset = rainPresetForObservation(obs);
+    if (!preset) return;
+    if (P.rainMode === 'dynamic') {
+      applyRainPreset(preset);
+      return;
+    }
+    if (!(P.rain && P.rainFollow)) return;
+    if (Math.abs(P.rainIntensity - preset.intensity) > 0.02) showDrivenSetting('rainIntensity', preset.intensity);
+    if (P.rainStyle !== preset.style) {
+      showDrivenChoice('rainStyle', preset.style);
+      raiseLightning(preset.style);
       applyHurricaneState();
     }
   }
   function applyRainFollow() {
     const lapse = P.skyMode === 'lapse';
-    const follow = Boolean(P.rain && P.rainFollow) && !lapse;
-    if (!lapse) {
+    const driven = rainIsWeatherDriven();
+    const follow = Boolean(P.rain && P.rainFollow) && !lapse && !driven;
+    if (!lapse && !driven) {
       if (follow && !rainManual) rainManual = { rainIntensity: P.rainIntensity, rainStyle: P.rainStyle };
       if (!follow && rainManual) {
         const saved = rainManual;
@@ -2427,13 +2480,46 @@ async function main() {
         showDrivenChoice('rainStyle', saved.rainStyle);
       }
     }
-    setSettingLocked('rain', lapse);
-    setSettingLocked('rainFollow', lapse || !P.rain);
-    setSettingLocked('rainIntensity', lapse || follow);
-    setSettingLocked('rainStyle', lapse || follow);
-    setSettingLocked('rainLightning', lapse);
-    if (follow) updateFollowedRain();
+    setSettingLocked('rain', lapse || driven);
+    setSettingLocked('rainFollow', lapse || driven || !P.rain);
+    setSettingLocked('rainIntensity', lapse || driven || follow);
+    setSettingLocked('rainStyle', lapse || driven || follow);
+    setSettingLocked('rainLightning', lapse || driven);
+    setSettingLocked('rainRipples', driven);
+    setSettingLocked('rainSplashes', driven);
+    if (driven || follow) updateFollowedRain();
     applyHurricaneState();
+  }
+  function acceptRainMode(value) {
+    const control = controls.get('rainMode');
+    const locked = (P.skyMode === 'dynamic' && value !== 'dynamic') || (P.skyMode === 'lapse' && value !== P.rainMode);
+    if (locked || (value === 'dynamic' && !P.weather)) {
+      if (control) control.input.value = P.rainMode;
+      if (!locked && value === 'dynamic') note('Turn on the weather widget before using dynamic rain');
+      return false;
+    }
+    return true;
+  }
+  function applyRainMode() {
+    if (P.rainMode === 'dynamic' && !P.weather && P.skyMode !== 'dynamic') showDrivenChoice('rainMode', 'static');
+    if (P.rainMode === 'dynamic') snapshotDynamicRain();
+    else restoreDynamicRain();
+    syncRainModeControl();
+    applyRainFollow();
+  }
+  function forceDynamicRainForSky() {
+    if (P.skyMode !== 'dynamic') return;
+    let changed = false;
+    if (!P.weather) {
+      showDrivenSetting('weather', true);
+      changed = true;
+    }
+    if (P.rainMode !== 'dynamic') {
+      showDrivenChoice('rainMode', 'dynamic');
+      changed = true;
+    }
+    if (changed) rememberSettings();
+    if (changed && weatherWidget) applyWeather(true);
   }
   function applySunControls() {
     const placed = skyUsesPlace();
@@ -2488,17 +2574,14 @@ async function main() {
     if (lapse) {
       resetTimeLapse();
       captureLapseRain();
-      setSettingLocked('rain', true);
-      setSettingLocked('rainFollow', true);
-      setSettingLocked('rainIntensity', true);
-      setSettingLocked('rainStyle', true);
-      setSettingLocked('rainLightning', true);
       // Cloud setup snapshots the manual deck on startup. Driving rain before that
       // snapshot would store the rain clouds as the user's clouds.
       if (cloudManual || P.cloudMode !== 'dynamic') updateLapseRain();
     } else {
       releaseLapseRain();
     }
+    forceDynamicRainForSky();
+    applyRainMode();
     if (dated && !P.skyWhen) {
       P.skyWhen = localDateTimeValue();
       const when = controls.get('skyWhen');
@@ -2769,11 +2852,27 @@ async function main() {
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
       if (key === 'sound' || key === 'oceanPlayback' || key === 'rainPlayback') applySoundPlayback();
+      if (key === 'weather' && value === false && P.skyMode === 'dynamic') {
+        P.weather = true;
+        if (control) {
+          control.input.checked = true;
+          control.output.textContent = control.onText;
+        }
+        note('Dynamic sky keeps weather on so rain can follow it');
+        return false;
+      }
       if (key === 'rain' || key === 'rainFollow') applyRainFollow();
       if (key === 'rainFollow') applyWeather(true);
       if (key === 'showInfo' || key === 'showButtons') applyShowInfo();
       if (key.startsWith('clock') || key === 'compass' || key === 'compassTilt') applyClock();
       if (key.startsWith('weather')) applyWeather();
+      if (key === 'weather') {
+        if (!P.weather && P.rainMode === 'dynamic') {
+          showDrivenChoice('rainMode', 'static');
+          note('Dynamic rain needs the weather widget');
+        }
+        applyRainMode();
+      }
       if (key === 'moon' || key === 'stars' || key === 'cloudMotion') envFull = 2;
       keepManualSetting(key);
       rememberSettings();
@@ -2782,6 +2881,7 @@ async function main() {
     if (STRING_KEYS.has(key)) {
       value = coerceSetting(key, value);
       if (value === undefined) return false;
+      if (key === 'rainMode' && !acceptRainMode(value)) return false;
       P[key] = value;
       if (control) control.input.value = value;
       if (key.startsWith('clock') || key === 'compassPosition') applyClock();
@@ -2790,8 +2890,9 @@ async function main() {
       if (key === 'skyMode') applySkyMode(true);
       if (key === 'cloudMode') applyCloudMode();
       if (key === 'starMode') applyStarMode();
+      if (key === 'rainMode') applyRainMode();
       if (key === 'rainStyle') {
-        if (!P.rainFollow) raiseLightning(value);
+        if (P.rainMode !== 'dynamic' && !P.rainFollow) raiseLightning(value);
         applyHurricaneState();
       }
       if (key === 'skyLapseStart') resetTimeLapse();
@@ -2839,6 +2940,7 @@ async function main() {
     if (moonManual && MOON_DRIVEN.includes(key)) moonManual[key] = P[key];
     if (hurricaneManual && Object.hasOwn(hurricaneManual, key)) hurricaneManual[key] = P[key];
     if (rainManual && Object.hasOwn(rainManual, key)) rainManual[key] = P[key];
+    if (dynamicRainManual && Object.hasOwn(dynamicRainManual, key)) dynamicRainManual[key] = P[key];
     if (lapseRainManual && Object.hasOwn(lapseRainManual, key)) lapseRainManual[key] = P[key];
     if (rainCloudManual && Object.hasOwn(rainCloudManual, key)) rainCloudManual[key] = P[key];
     if (skyUsesPlace() && SUN_DRIVEN.includes(key)) updateDrivenSun();
@@ -2891,6 +2993,7 @@ async function main() {
     moonManual = null;
     hurricaneManual = null;
     rainManual = null;
+    dynamicRainManual = null;
     rainCloudManual = null;
     lapseRainManual = null;
     for (const key of Object.keys(DEFAULTS)) commitSetting(key, DEFAULTS[key]);
