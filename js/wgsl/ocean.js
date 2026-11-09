@@ -10,11 +10,10 @@ const RENDER_BINDINGS = /* wgsl */ `
 @group(0) @binding(3) var sampC: sampler;
 `;
 
-// Full-resolution sky + clouds. Cloud silhouettes are anti-aliased analytically: the
-// screen-space derivative of each layer's edge function sets the width of its opacity edge.
-export const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
-@group(0) @binding(4) var starMap: texture_2d<f32>;
-` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
+// Clouds are a half-resolution field. The edge function is differentiated once per
+// cloud texel and reused for the silhouette; the full-resolution sky only samples it.
+export const CLOUD_DIV = 2;
+const CLOUD_VS = /* wgsl */ `
 struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
@@ -23,21 +22,54 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   o.ndc = p;
   return o;
 }
+`;
+
+export const CLOUD_LAYER = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
+@group(0) @binding(4) var starMap: texture_2d<f32>;
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + CLOUD_VS + /* wgsl */ `
 @fragment fn fs(in: VO) -> @location(0) vec4f {
+  // The catalog is sampled by the full-resolution sky. Touch it here so the binding
+  // stays in this pipeline even though the cloud field itself has no stars.
+  if (textureDimensions(starMap).x == 0u) { return vec4f(0.0); }
   let dir = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
-  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w;
+  // A cloud texel covers CLOUD_DIV screen pixels, so the footprint and the analytic
+  // edge width have to be measured in that coarser pixel.
+  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w * ${CLOUD_DIV}.0;
   var d2 = dir;
   d2.y = max(d2.y, 0.0005);
   d2 = normalize(d2);
-  // edge functions at this pixel (uniform control flow, so fwidth is valid)
+  // Uniform control flow: fwidth is only valid if every lane evaluates the edge.
   let hl = hitLayer(d2, F.cloudP.x);
   let el = lowEdge(hl.q, hl.t * pixAng / hl.mu, 7);
   let hh = hitLayer(d2, F.cloudShape.y);
   let eh = highEdge(hh.q, hh.t * pixAng / hh.mu, 6);
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
-  let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a, true) + cl.rgb + sunDisk(dir) * sunT;
+  var ray = dir;
+  if (dir.y > 0.0) { ray = d2; }
+  let cl = shadeCloudDeck(ray, pixAng, aa, el, eh, true, &sunT);
+  return cl + vec4f(sunT * 0.0);
+}
+`;
+
+// Full-resolution sky. Clouds come from the half-resolution field; stars, the moon,
+// and the sun disc stay sharp. Coverage and cloud colour are premultiplied, so the
+// bilinear sample is the composite.
+export const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
+@group(0) @binding(4) var starMap: texture_2d<f32>;
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
+@group(0) @binding(6) var cloudTex: texture_2d<f32>;
+` + CLOUD_VS + /* wgsl */ `
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let dir = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
+  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w;
+  var d2 = dir;
+  d2.y = max(d2.y, 0.0005);
+  d2 = normalize(d2);
+  let cl = textureSampleLevel(cloudTex, sampC, in.pos.xy * F.screen.zw, 0.0);
+  let cover = cl.a;
+  let open = 1.0 - cover;
+  let L = skyAtmo(d2) * open + nightSky(d2, pixAng, cover, true) + cl.rgb + sunDisk(dir) * open;
   return vec4f(applyRainSky(d2, L), 1.0);
 }
 `;

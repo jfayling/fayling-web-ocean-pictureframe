@@ -1317,7 +1317,9 @@ fn shadeLayer(dir: vec3f, h: CloudHit, hc: f32, d: f32, s1: f32, s2: f32, s3: f3
 // returns (premultiplied radiance, fraction of the background sky hidden)
 // aa: per-layer edge change per pixel (fwidth of the edge function); negative = estimate it
 // from the pixel footprint (compute passes, which have no derivatives)
-fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> vec4f {
+// hasEdge: the caller already evaluated both edge functions (so the sky can fwidth them
+// once and reuse the values, instead of building the whole field a second time)
+fn shadeCloudDeck(dir: vec3f, pixAng: f32, aa: vec2f, elIn: f32, ehIn: f32, hasEdge: bool, sunT: ptr<function, f32>) -> vec4f {
   *sunT = 1.0;
   if (dir.y <= 0.0) { return vec4f(0.0); }
   let sxz = F.sunDir.xz / max(length(F.sunDir.xz), 1e-4);
@@ -1330,7 +1332,8 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
     let far = 1.0 - smoothstep(18.0, 36.0, h.t);
     if (far > 0.0) {
       let fp = h.t * pixAng / h.mu;
-      let e = lowEdge(h.q, fp, 7);
+      var e: f32;
+      if (hasEdge) { e = elIn; } else { e = lowEdge(h.q, fp, 7); }
       let d = clamp(e / lowSoft(fp), 0.0, 1.0) * far;
       if (d > 0.002) {
         let s1 = lowDensity(h.q + sxz * 0.08, fp, 5) * far;
@@ -1353,7 +1356,8 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
     let far = 1.0 - smoothstep(30.0, 70.0, h.t);
     if (far > 0.0) {
       let fp = h.t * pixAng / h.mu;
-      let e = highEdge(h.q, fp, 6);
+      var e: f32;
+      if (hasEdge) { e = ehIn; } else { e = highEdge(h.q, fp, 6); }
       let d = clamp(e / highSoft(fp), 0.0, 1.0) * far;
       if (d > 0.002) {
         let s1 = highDensity(h.q + sxz * 0.15, fp, 4) * far;
@@ -1374,6 +1378,10 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
   // Put the missing atmosphere back into the color and keep the geometric coverage.
   let haze = skyAtmo(dir) * (lo.a * (1.0 - loVis) + hi.a * (1.0 - lo.a) * (1.0 - hiVis));
   return vec4f(col + haze, cover);
+}
+
+fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> vec4f {
+  return shadeCloudDeck(dir, pixAng, aa, 0.0, 0.0, false, sunT);
 }
 
 fn sunDisk(dir: vec3f) -> vec3f {
@@ -2123,11 +2131,10 @@ const RENDER_BINDINGS = /* wgsl */ `
 @group(0) @binding(3) var sampC: sampler;
 `;
 
-// Full-resolution sky + clouds. Cloud silhouettes are anti-aliased analytically: the
-// screen-space derivative of each layer's edge function sets the width of its opacity edge.
-const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
-@group(0) @binding(4) var starMap: texture_2d<f32>;
-` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
+// Clouds are a half-resolution field. The edge function is differentiated once per
+// cloud texel and reused for the silhouette; the full-resolution sky only samples it.
+const CLOUD_DIV = 2;
+const CLOUD_VS = /* wgsl */ `
 struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
@@ -2136,21 +2143,54 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   o.ndc = p;
   return o;
 }
+`;
+
+const CLOUD_LAYER = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
+@group(0) @binding(4) var starMap: texture_2d<f32>;
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + CLOUD_VS + /* wgsl */ `
 @fragment fn fs(in: VO) -> @location(0) vec4f {
+  // The catalog is sampled by the full-resolution sky. Touch it here so the binding
+  // stays in this pipeline even though the cloud field itself has no stars.
+  if (textureDimensions(starMap).x == 0u) { return vec4f(0.0); }
   let dir = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
-  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w;
+  // A cloud texel covers CLOUD_DIV screen pixels, so the footprint and the analytic
+  // edge width have to be measured in that coarser pixel.
+  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w * ${CLOUD_DIV}.0;
   var d2 = dir;
   d2.y = max(d2.y, 0.0005);
   d2 = normalize(d2);
-  // edge functions at this pixel (uniform control flow, so fwidth is valid)
+  // Uniform control flow: fwidth is only valid if every lane evaluates the edge.
   let hl = hitLayer(d2, F.cloudP.x);
   let el = lowEdge(hl.q, hl.t * pixAng / hl.mu, 7);
   let hh = hitLayer(d2, F.cloudShape.y);
   let eh = highEdge(hh.q, hh.t * pixAng / hh.mu, 6);
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
-  let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = skyAtmo(d2) * (1.0 - cl.a) + nightSky(d2, pixAng, cl.a, true) + cl.rgb + sunDisk(dir) * sunT;
+  var ray = dir;
+  if (dir.y > 0.0) { ray = d2; }
+  let cl = shadeCloudDeck(ray, pixAng, aa, el, eh, true, &sunT);
+  return cl + vec4f(sunT * 0.0);
+}
+`;
+
+// Full-resolution sky. Clouds come from the half-resolution field; stars, the moon,
+// and the sun disc stay sharp. Coverage and cloud colour are premultiplied, so the
+// bilinear sample is the composite.
+const SKY_BG = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ `
+@group(0) @binding(4) var starMap: texture_2d<f32>;
+` + SKY_RENDER_FUNCS + SKY_CLOUD_FUNCS + RAIN_SKY + /* wgsl */ `
+@group(0) @binding(6) var cloudTex: texture_2d<f32>;
+` + CLOUD_VS + /* wgsl */ `
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let dir = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
+  let pixAng = 2.0 * length(F.camUp.xyz) * F.screen.w;
+  var d2 = dir;
+  d2.y = max(d2.y, 0.0005);
+  d2 = normalize(d2);
+  let cl = textureSampleLevel(cloudTex, sampC, in.pos.xy * F.screen.zw, 0.0);
+  let cover = cl.a;
+  let open = 1.0 - cover;
+  let L = skyAtmo(d2) * open + nightSky(d2, pixAng, cover, true) + cl.rgb + sunDisk(dir) * open;
   return vec4f(applyRainSky(d2, L), 1.0);
 }
 `;
@@ -4027,6 +4067,8 @@ const P = {
   rainPlayback: true,
   showButtons: true,
   showInfo: false,
+  // auto keeps the GPU near one refresh; native is every display pixel
+  quality: 'auto',
   clock: true,
   clock24h: false,
   clockSeconds: false,
@@ -4305,8 +4347,8 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const MSAA = 4;
   const HDR = 'rgba16float';
-  const [oceanMod, skyMod, downMod, upMod, compMod] = await Promise.all([
-    shader(OCEAN, 'ocean'), shader(SKY_BG, 'sky'), shader(BLOOM_DOWN, 'bloom down'),
+  const [oceanMod, skyMod, cloudMod, downMod, upMod, compMod] = await Promise.all([
+    shader(OCEAN, 'ocean'), shader(SKY_BG, 'sky'), shader(CLOUD_LAYER, 'clouds'), shader(BLOOM_DOWN, 'bloom down'),
     shader(BLOOM_UP, 'bloom up'), shader(COMPOSITE, 'composite'),
   ]);
   const oceanPipe = await device.createRenderPipelineAsync({
@@ -4327,6 +4369,12 @@ async function main() {
     primitive: { topology: 'triangle-list' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'equal' },
     multisample: { count: MSAA },
+  });
+  const cloudPipe = await device.createRenderPipelineAsync({
+    label: 'clouds', layout: 'auto',
+    vertex: { module: cloudMod, entryPoint: 'vs' },
+    fragment: { module: cloudMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' },
   });
   const downPipe = await device.createRenderPipelineAsync({
     label: 'bloom down', layout: 'auto',
@@ -4408,7 +4456,8 @@ async function main() {
   const bgOcean = [0, 1].map((i) => [0, 1].map((r) => bg(oceanPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp,
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
     fullArr(foamW[i]), { buffer: sunVisBuf }, { buffer: rainUBO }, rainTex[r].createView(), rainSamp], 'ocean' + i + r)));
-  const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView, { buffer: rainUBO }], 'sky');
+  const bgCloud = bg(cloudPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView], 'clouds');
+  let bgSky = null;
 
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
@@ -4458,10 +4507,28 @@ async function main() {
   for (let i = 0; i < BLOOM_LEVELS * 2; i++) bloomUBOs.push(mkBuf(16, GU.UNIFORM | GU.COPY_DST, 'bloom ubo'));
 
   let W = 0, H = 0;
-  let colorMS, depthMS, hdrTex, bloomTex;
+  let colorMS, depthMS, hdrTex, bloomTex, cloudTex;
+  let cloudW = 1, cloudH = 1;
+  // Auto aims at the resolution the picture was tuned for, then gives pixels back
+  // when the GPU is idle and takes them away when a frame no longer fits a refresh.
+  const TUNED_PIXELS = 2560 * 1440;
+  const MIN_SCALE = 1 / 3;
+  let pixelTarget = TUNED_PIXELS;
+  let pixelFloor = 1280 * 720;
+  // Seconds until the next resolution change is allowed. Every change reallocates the
+  // full-screen HDR targets, which stalls the frame; changes must be rare to stay smooth.
+  let resolutionCooldown = 0;
+  let wallEma = 16.7;
+  // The last resolution we tried to leave. If a smaller target does not shorten
+  // the frame, the cost is not pixels and shrinking further only softens the picture.
+  let pendingPixels = 0;
+  let pendingMs = 0;
   const mainPass = {
     colorAttachments: [{ view: null, resolveTarget: null, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'discard' }],
     depthStencilAttachment: { view: null, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
+  };
+  const cloudPass = {
+    colorAttachments: [{ view: null, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }],
   };
   const compPass = {
     colorAttachments: [{ view: null, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
@@ -4469,15 +4536,41 @@ async function main() {
   };
   let downPasses = [], upPasses = [], downBGs = [], upBGs = [], bgComp = null;
 
+  function nativeSize() {
+    const dpr = window.devicePixelRatio || 1;
+    return [
+      Math.max(1, Math.round(canvas.clientWidth * dpr)),
+      Math.max(1, Math.round(canvas.clientHeight * dpr)),
+    ];
+  }
+  function renderScale() {
+    if (Number(qs.get('w')) || Number(qs.get('h'))) return 1;
+    if (P.quality === 'native') return 1;
+    if (P.quality === 'balanced') return 0.75;
+    if (P.quality === 'efficient') return 0.5;
+    const [nw, nh] = nativeSize();
+    return Math.min(1, Math.max(MIN_SCALE, Math.sqrt(pixelTarget / (nw * nh))));
+  }
   function resize() {
     const fw = Number(qs.get('w')) || 0, fh = Number(qs.get('h')) || 0;
-    const dpr = window.devicePixelRatio || 1;
-    const w = fw || Math.max(1, Math.round(canvas.clientWidth * dpr));
-    const h = fh || Math.max(1, Math.round(canvas.clientHeight * dpr));
-    if (w === W && h === H) return;
+    const [nw, nh] = nativeSize();
+    const scale = renderScale();
+    let w = fw || Math.max(1, Math.round(nw * scale));
+    let h = fh || Math.max(1, Math.round(nh * scale));
+    w = Math.max(CLOUD_DIV, w - (w % CLOUD_DIV));
+    h = Math.max(CLOUD_DIV, h - (h % CLOUD_DIV));
+    if (w === W && h === H && cloudTex) return;
     W = w; H = h;
     canvas.width = W; canvas.height = H;
-    for (const t of [colorMS, depthMS, hdrTex, bloomTex]) t && t.destroy();
+    for (const t of [colorMS, depthMS, hdrTex, bloomTex, cloudTex]) t && t.destroy();
+    cloudW = Math.max(1, W / CLOUD_DIV);
+    cloudH = Math.max(1, H / CLOUD_DIV);
+    cloudTex = device.createTexture({
+      label: 'clouds', size: [cloudW, cloudH], format: HDR,
+      usage: TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING,
+    });
+    cloudPass.colorAttachments[0].view = cloudTex.createView();
+    bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp, starView, { buffer: rainUBO }, cloudTex.createView()], 'sky');
     colorMS = device.createTexture({ size: [W, H], format: HDR, sampleCount: MSAA, usage: TU.RENDER_ATTACHMENT });
     depthMS = device.createTexture({ size: [W, H], format: 'depth32float', sampleCount: MSAA, usage: TU.RENDER_ATTACHMENT });
     hdrTex = device.createTexture({ size: [W, H], format: HDR, usage: TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING });
@@ -5104,7 +5197,7 @@ async function main() {
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
     'rain', 'rainFollow',
     'moon', 'stars', 'cloudMotion']);
-  const STRING_KEYS = new Set(['clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
+  const STRING_KEYS = new Set(['quality', 'clockStyle', 'clockColor', 'clockPosition', 'compassPosition', 'weatherZip', 'weatherUnit', 'weatherPosition',
     'skyMode', 'zipCode', 'skyWhen', 'skyLapseStart', 'cloudMode', 'starMode', 'rainMode', 'rainStyle']);
   const SUN_DRIVEN = ['sunElev', 'sunAzim'];
   const CLOUD_DRIVEN = [
@@ -5175,6 +5268,12 @@ async function main() {
   const SECTIONS = [
     { title: 'General', groups: [
       { settings: [
+        ['quality', 'Picture quality', 'select', [
+          ['auto', 'Auto'],
+          ['native', 'Native'],
+          ['balanced', 'Balanced (75%)'],
+          ['efficient', 'Efficient (50%)'],
+        ]],
         ['showButtons', 'Onscreen buttons', 'toggle', 'Show', 'Hide'],
         ['showInfo', 'Onscreen information', 'toggle', 'Show', 'Hide'],
       ] },
@@ -6839,6 +6938,14 @@ async function main() {
       if (key === 'skyLapseStart') resetTimeLapse();
       if (key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') resolveZipCode();
       if (key === 'skyMode' || key === 'zipCode' || key === 'skyWhen' || key === 'skyLapseStart') envFull = 2;
+      if (key === 'quality') {
+        pixelTarget = TUNED_PIXELS;
+        pixelFloor = 1280 * 720;
+        pendingPixels = 0;
+        pendingMs = 0;
+        resolutionCooldown = 2;
+        if (W > 0) { W = -1; resize(); }
+      }
       keepManualSetting(key);
       rememberSettings();
       return true;
@@ -7145,17 +7252,80 @@ async function main() {
     cp.dispatchWorkgroups(Math.ceil((RAIN_RES * RAIN_RES) / 256));
   }
 
+  // Rows of the cloud target that can see the sky. The horizon is a straight line
+  // because camera-right is horizontal, so a scissor drops the ocean half before
+  // the cloud shader ever runs.
+  function cloudRows() {
+    const tanY = Math.tan(cam.fovY * 0.5);
+    const yaw = cam.yaw, pitch = cam.pitch;
+    const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const fx = cp * sy, fy = sp, fz = -cp * cy;
+    const uy = sy * fx - cy * fz;
+    const denom = uy * tanY;
+    if (denom <= 1e-5) return cloudH;
+    const ndc = -fy / denom;
+    const row = (1 - ndc) * 0.5 * cloudH;
+    return Math.max(0, Math.min(cloudH, Math.ceil(row) + 2));
+  }
+  function adaptSample() {
+    if (hasTS && gpuMs > 0.05) return gpuMs;
+    if (wallEma > 22 || wallEma < 12) return wallEma;
+    return 8.5;
+  }
+  function adaptResolution() {
+    if (shotName || P.quality !== 'auto') return;
+    if (Number(qs.get('w')) || Number(qs.get('h'))) return;
+    if (frameIndex < 120 || resolutionCooldown > 0) return;
+    const ms = adaptSample();
+    const [nw, nh] = nativeSize();
+    const native = nw * nh;
+    const rendered = W * H;
+    let next = pixelTarget;
+    if (ms > 13 && pixelTarget > pixelFloor * 1.05) {
+      if (pendingPixels && rendered < pendingPixels * 0.92 && ms > pendingMs * 0.88) {
+        // Shrinking did not shorten the frame, so pixels are not the cost. Stop here.
+        pixelFloor = rendered;
+        pendingPixels = 0;
+        resolutionCooldown = 20;
+        log(`stopped at ${Math.round(rendered)} px; gpu stayed at ${ms.toFixed(1)} ms`);
+        return;
+      }
+      pendingPixels = rendered;
+      pendingMs = ms;
+      next = Math.max(pixelFloor, pixelTarget * 0.8);
+    } else if (ms < 7 && rendered < native * 0.98) {
+      pendingPixels = 0;
+      next = Math.min(native, pixelTarget * 1.2);
+    } else if (ms < 9 && pixelTarget < TUNED_PIXELS && rendered >= native * 0.98) {
+      pendingPixels = 0;
+      next = Math.min(TUNED_PIXELS, pixelTarget * 1.25);
+    } else {
+      pendingPixels = 0;
+    }
+    if (Math.abs(next - pixelTarget) / pixelTarget < 0.05) return;
+    resolutionCooldown = next < pixelTarget ? 6 : 20;
+    pixelTarget = next;
+    log(`resolution target ${Math.round(pixelTarget)} px after ${ms.toFixed(1)} ms`);
+    W = -1;
+  }
   function frame(now) {
     if (shooting) return;  // paused while a screenshot is read back
     requestAnimationFrame(frame);
+    adaptResolution();
     resize();
     let dt = Math.min(0.1, (now - last) / 1000);
     last = now;
+    resolutionCooldown = Math.max(0, resolutionCooldown - dt);
+    wallEma = wallEma * 0.9 + dt * 1000 * 0.1;
     fpsAcc += dt; fpsN++; fpsT += dt;
     if (fpsT > 0.5) {
       const fps = fpsN / fpsAcc;
+      const [nw] = nativeSize();
+      const forced = Number(qs.get('w')) || Number(qs.get('h'));
+      const scalePct = !forced && P.quality !== 'native' && nw > 0 ? Math.round(100 * W / nw) : 100;
       hudFps.textContent = `${fps.toFixed(0)} fps  ${(1000 / fps).toFixed(2)} ms` +
-        (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}`;
+        (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}` +
+        (scalePct < 99 ? `  ${scalePct}%` : '');
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
     advanceTimeLapse(dt);
@@ -7209,6 +7379,8 @@ async function main() {
     cp.setPipeline(probePipe);
     cp.setBindGroup(0, bgProbe);
     cp.dispatchWorkgroups(1);
+    // Rebuilt every frame: in time lapse the sun moves each frame, and a stale view
+    // lags the sky by one frame on alternating frames.
     cp.setPipeline(skyViewPipe);
     cp.setBindGroup(0, bgSkyView);
     cp.dispatchWorkgroups(Math.ceil(SKY_W / 8), Math.ceil(SKY_H / 8));
@@ -7227,6 +7399,16 @@ async function main() {
       cp.dispatchWorkgroups(Math.ceil(s / 8), Math.ceil(s / 8), 6);
     }
     cp.end();
+
+    const rows = cloudRows();
+    const crp = enc.beginRenderPass(cloudPass);
+    if (rows > 0) {
+      crp.setPipeline(cloudPipe);
+      crp.setBindGroup(0, bgCloud);
+      crp.setScissorRect(0, 0, cloudW, rows);
+      crp.draw(3);
+    }
+    crp.end();
 
     const rp = enc.beginRenderPass(mainPass);
     if (nodeCount) {

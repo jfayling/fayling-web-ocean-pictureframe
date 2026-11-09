@@ -467,7 +467,9 @@ fn shadeLayer(dir: vec3f, h: CloudHit, hc: f32, d: f32, s1: f32, s2: f32, s3: f3
 // returns (premultiplied radiance, fraction of the background sky hidden)
 // aa: per-layer edge change per pixel (fwidth of the edge function); negative = estimate it
 // from the pixel footprint (compute passes, which have no derivatives)
-fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> vec4f {
+// hasEdge: the caller already evaluated both edge functions (so the sky can fwidth them
+// once and reuse the values, instead of building the whole field a second time)
+fn shadeCloudDeck(dir: vec3f, pixAng: f32, aa: vec2f, elIn: f32, ehIn: f32, hasEdge: bool, sunT: ptr<function, f32>) -> vec4f {
   *sunT = 1.0;
   if (dir.y <= 0.0) { return vec4f(0.0); }
   let sxz = F.sunDir.xz / max(length(F.sunDir.xz), 1e-4);
@@ -480,7 +482,8 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
     let far = 1.0 - smoothstep(18.0, 36.0, h.t);
     if (far > 0.0) {
       let fp = h.t * pixAng / h.mu;
-      let e = lowEdge(h.q, fp, 7);
+      var e: f32;
+      if (hasEdge) { e = elIn; } else { e = lowEdge(h.q, fp, 7); }
       let d = clamp(e / lowSoft(fp), 0.0, 1.0) * far;
       if (d > 0.002) {
         let s1 = lowDensity(h.q + sxz * 0.08, fp, 5) * far;
@@ -503,7 +506,8 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
     let far = 1.0 - smoothstep(30.0, 70.0, h.t);
     if (far > 0.0) {
       let fp = h.t * pixAng / h.mu;
-      let e = highEdge(h.q, fp, 6);
+      var e: f32;
+      if (hasEdge) { e = ehIn; } else { e = highEdge(h.q, fp, 6); }
       let d = clamp(e / highSoft(fp), 0.0, 1.0) * far;
       if (d > 0.002) {
         let s1 = highDensity(h.q + sxz * 0.15, fp, 4) * far;
@@ -524,6 +528,10 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
   // Put the missing atmosphere back into the color and keep the geometric coverage.
   let haze = skyAtmo(dir) * (lo.a * (1.0 - loVis) + hi.a * (1.0 - lo.a) * (1.0 - hiVis));
   return vec4f(col + haze, cover);
+}
+
+fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> vec4f {
+  return shadeCloudDeck(dir, pixAng, aa, 0.0, 0.0, false, sunT);
 }
 
 fn sunDisk(dir: vec3f) -> vec3f {
