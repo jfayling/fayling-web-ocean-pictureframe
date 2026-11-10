@@ -1250,8 +1250,7 @@ async function main() {
   // Integrated advection. Multiplying wind by the clock jumps the field whenever the
   // wind changes, and that clock also wraps with the wave spectrum.
   // Time lapse advances the sun, moon, and stars by `lapsePace` sky minutes per real
-  // second. Cloud drift and shape evolution use that same sky clock; a real-time sky
-  // keeps a scale of 1 so wind stays in wall-clock m/s.
+  // second. Cloud drift and shape evolution use that same sky clock.
   const cloudScroll = { lowX: 0, lowZ: 0, highX: 0, highZ: 0, evolve: 0 };
   // Must match CLOUD_MORPH_WRAP in the cloud shader. Wrapping on a generation boundary
   // keeps the crossfade seamless and the phase exact in f32 over a long time lapse.
@@ -1260,9 +1259,15 @@ async function main() {
   // Low cumulus uses a faster integer harmonic of this clock.
   const CLOUD_HIGH_GENERATION_S = 6 * 3600;
   function cloudSkyScale() {
-    if (P.skyMode !== 'lapse') return 1;
-    const pace = Math.max(1, Number(P.lapsePace) || 20);
-    return pace * 60;
+    if (P.skyMode === 'lapse') {
+      const pace = Math.max(1, Number(P.lapsePace) || 20);
+      return pace * 60;
+    }
+    // Wall-clock m/s carries a new slice of the noise through the framed sky every
+    // few minutes, so the clouds look like they randomly redraw. Real-time plays
+    // the same wind and shape clock at a quarter pace; the sliders still show m/s.
+    if (P.skyMode === 'dynamic') return 0.25;
+    return 1;
   }
   function splitKm(v) {
     const i = Math.floor(v);
