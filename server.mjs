@@ -17,6 +17,7 @@ const types = {
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
   '.json': 'application/json',
+  '.mp3': 'audio/mpeg',
 };
 
 http.createServer((req, res) => {

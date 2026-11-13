@@ -40,6 +40,7 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 | Esc, H, or the × button | Close the settings panel |
 | H | Show or hide the settings panel |
 | M, the Sound button, or Sound → Playback | Mute or unmute the ocean and the rain |
+| K, the Music button, or Sound → Music | Turn background music on or off |
 | T | Show or hide the clock |
 | F | Show or hide the weather |
 | N | Show or hide the compass |
@@ -48,7 +49,7 @@ The camera keeps itself above the displaced water surface, so waves never pass t
 
 The cursor is an open hand at rest and a closed hand while you are dragging. Looking around only happens while the left button is held. After a two-button view reset, the view stays still until you release the left button and press it again.
 
-Sound and Settings sit together at the top right. They use the same surface as the settings panel and rest at low opacity so they stay out of the picture, then come forward on hover or focus. Onscreen buttons shows or hides them. Onscreen information shows or hides the frame rate, the control help, and, during a time lapse, the date, time, and place being rendered. Buttons are on by default. Onscreen information is off, so a television can show the ocean, the clock, and the weather without the diagnostics.
+Sound, Music, and Settings sit together at the top right. They use the same surface as the settings panel and rest at low opacity so they stay out of the picture, then come forward on hover or focus. Onscreen buttons shows or hides them. Onscreen information shows or hides the frame rate, the control help, and, during a time lapse, the date, time, and place being rendered. Buttons are on by default. Onscreen information is off, so a television can show the ocean, the clock, and the weather without the diagnostics.
 
 `ui=0` in the URL hides both the HUD and the buttons for that visit.
 
@@ -58,7 +59,7 @@ The panel is an accordion. The sections are **General**, **Sound**, **Widgets**,
 
 ![General settings and keyboard shortcuts](docs/settings-general.png)
 
-Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** applies the recognized values in that file and leaves every omitted setting unchanged. Booleans such as `sound`, `oceanPlayback`, `rainPlayback`, `showButtons`, and `showInfo` accept `true` or `false`. An older file that still has `rainThunder` is read as both thunder snap and thunder rumble. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. The same `rainThunder` split applies to a shared link and to a saved session. Export and Share keep the manual values behind a lock: Static settings while a Dynamic mode is active, the clouds from before a rain deck, the wind, swell, chop, foam, and haze from before a hurricane, and the rain switch, intensity, style, and lightning from before a time lapse. Import writes those locked values back into the saved setup, so turning the mode or the storm off restores them. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
+Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** applies the recognized values in that file and leaves every omitted setting unchanged. Booleans such as `sound`, `music`, `oceanPlayback`, `rainPlayback`, `showButtons`, and `showInfo` accept `true` or `false`. An older file that still has `rainThunder` is read as both thunder snap and thunder rumble. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. The same `rainThunder` split applies to a shared link and to a saved session. Export and Share keep the manual values behind a lock: Static settings while a Dynamic mode is active, the clouds from before a rain deck, the wind, swell, chop, foam, and haze from before a hurricane, and the rain switch, intensity, style, and lightning from before a time lapse. Import writes those locked values back into the saved setup, so turning the mode or the storm off restores them. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
 URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
 
@@ -79,6 +80,8 @@ Sound starts off. **Playback** at the top of this section, the Sound button, and
 - **Stereo width** controls how far the wind shifts the sound between the ears.
 
 **Rain** sets the rain bed, drop impacts, wind, thunder snap, and thunder rumble. Those levels stay in this section, separate from the ocean mix.
+
+**Music** loops `media/track001.mp3`. It starts off. The switch and the volume are saved, and they stay independent of ocean and rain playback, so the track can play alone. A browser may hold a saved "on" until the first click or key; that gesture starts the track. The Music button handles its own press, so turning music off does not also start it.
 
 ### Widgets
 

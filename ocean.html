@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>fayling-web-ocean-pictureframe</title>
+<title>Ocean Picture Frame</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
@@ -20,7 +20,7 @@
   #toolbar button:hover, #toolbar button:focus-visible { opacity: 1; background: #18222ce6; }
   #toolbar button:focus-visible { outline: 2px solid #e2a04e; outline-offset: 2px; }
   #sound::before { content: '♪'; display: inline-block; width: 16px; opacity: .7; }
-  #sound.on, #settings[aria-expanded="true"] { border-color: #e2a04eaa; }
+  #sound.on, #music[aria-pressed="true"], #settings[aria-expanded="true"] { border-color: #e2a04eaa; }
   #sound.on::before { opacity: 1; }
   #panel { position: fixed; z-index: 3; right: 12px; top: 50px; width: 330px; max-height: calc(100vh - 60px);
            display: flex; flex-direction: column; overflow: hidden; border-radius: 8px;
@@ -213,26 +213,59 @@
     to { transform: translateY(-50%); }
   }
   .weather-error { padding: 11px 14px; font-size: 12px; opacity: .72; }
-  #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
+  #err { position: fixed; inset: 0; z-index: 40; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
+  #loading { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #000; color: #f7f4ee;
+             font-family: system-ui, sans-serif; transition: opacity 1.8s ease; }
+  #loading::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 38vh; pointer-events: none;
+                     background: radial-gradient(ellipse 70% 100% at 50% 100%, #3a2c1c 0%, #140f0c 46%, transparent 72%); }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading.done .loading-track::after { animation: none; }
+  #loading[hidden] { display: none; }
+  .loading-copy { position: relative; text-align: center; }
+  .loading-kicker { margin: 0 0 18px; padding-left: .32em; font: 300 12px/1 system-ui, sans-serif;
+                    letter-spacing: .32em; text-transform: uppercase; opacity: .55; }
+  #loading h1 { margin: 0; padding-left: .22em; font: 300 clamp(34px, 5vw, 56px)/1 system-ui, sans-serif;
+                letter-spacing: .22em; text-transform: uppercase; }
+  #loading-status { margin: 28px 0 0; min-height: 1.4em; font: 14px/1.4 system-ui, sans-serif; letter-spacing: .04em; opacity: .78; }
+  .loading-track { position: relative; width: min(240px, 64vw); height: 2px; margin: 20px auto 0; overflow: hidden; background: #f7f4ee1f; }
+  #loading-bar { display: block; height: 100%; background: #e2a04e; transform: scaleX(.04); transform-origin: left center;
+                 transition: transform .6s ease; }
+  .loading-track::after { content: ''; position: absolute; inset: 0;
+                          background: linear-gradient(90deg, transparent, #fff8, transparent);
+                          transform: translateX(-100%); animation: loading-sheen 1.6s ease-in-out infinite; }
+  @keyframes loading-sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @media (prefers-reduced-motion: reduce) {
+    #loading, #loading-bar { transition: none; }
+    .loading-track::after { display: none; }
+  }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hud">
+<div id="loading" aria-busy="true">
+  <div class="loading-copy">
+    <p class="loading-kicker">Picture frame</p>
+    <h1>Ocean</h1>
+    <p id="loading-status" aria-live="polite">Preparing the picture</p>
+    <div class="loading-track" aria-hidden="true"><span id="loading-bar"></span></div>
+  </div>
+</div>
+<canvas id="c" inert></canvas>
+<div id="hud" inert>
   <div id="sky-readout" hidden></div>
   <div id="fps">starting…</div>
-  <div class="help">left drag: look · left+right: reset view · WASD move · Space/E up · Q/C down · wheel up/down · Shift fast · F1 settings · H panel · M sound · T clock · F weather · N compass</div>
+  <div class="help">left drag: look · left+right: reset view · WASD move · Space/E up · Q/C down · wheel up/down · Shift fast · F1 settings · H panel · M sound · K music · T clock · F weather · N compass</div>
 </div>
-<div id="toolbar">
+<div id="toolbar" inert>
   <button id="sound" type="button" aria-pressed="false" title="Toggle procedural ocean audio (M)">Sound off</button>
+  <button id="music" type="button" aria-pressed="false" title="Turn background music on or off (K)">Music off</button>
   <button id="settings" type="button" aria-expanded="false" title="Show settings (F1)">Settings</button>
 </div>
-<time id="clock-widget" aria-label="Current time">
+<time id="clock-widget" aria-label="Current time" inert>
   <span class="clock-time"></span>
   <span class="clock-date"></span>
 </time>
-<aside id="weather-widget" data-position="bottom-left" aria-label="Current weather" aria-live="polite" hidden></aside>
-<div id="compass-widget" aria-label="Compass" hidden>
+<aside id="weather-widget" data-position="bottom-left" aria-label="Current weather" aria-live="polite" hidden inert></aside>
+<div id="compass-widget" aria-label="Compass" hidden inert>
   <div class="compass-heading" hidden></div>
   <div class="compass-window" hidden>
     <div class="compass-tape"></div>
@@ -240,7 +273,7 @@
   </div>
   <div class="compass-tilt" hidden></div>
 </div>
-<div id="panel" class="hidden">
+<div id="panel" class="hidden" inert>
   <div class="panel-bar">
     <span>Settings</span>
     <button id="close-settings" type="button" aria-label="Close settings" title="Close settings (Esc)">×</button>
@@ -4063,6 +4096,8 @@ const P = {
   audioSync: 1,
   audioStereo: 1,
   sound: false,
+  music: false,
+  musicVolume: 100,
   oceanPlayback: true,
   rainPlayback: true,
   showButtons: true,
@@ -4113,7 +4148,48 @@ const P = {
 const DEFAULTS = { ...P };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
+const loadingEl = document.getElementById('loading');
+const loadingStatus = document.getElementById('loading-status');
+const loadingBar = document.getElementById('loading-bar');
+
+function reportLoad(message, amount) {
+  if (loadingStatus && loadingStatus.textContent !== message) loadingStatus.textContent = message;
+  if (loadingBar) loadingBar.style.transform = `scaleX(${amount})`;
+}
+// Two frames so the status paints before the next long compile. The timeout keeps startup
+// moving if the tab is not painting.
+function paintLoad(message, amount) {
+  reportLoad(message, amount);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 80);
+  });
+}
+function releaseApp() {
+  for (const id of ['c', 'hud', 'toolbar', 'clock-widget', 'weather-widget', 'compass-widget', 'panel']) {
+    document.getElementById(id)?.removeAttribute('inert');
+  }
+}
+function dismissLoad() {
+  if (!loadingEl || loadingEl.classList.contains('done')) return;
+  releaseApp();
+  loadingEl.classList.add('done');
+  loadingEl.setAttribute('aria-busy', 'false');
+  const remove = () => { if (loadingEl.isConnected) loadingEl.remove(); };
+  loadingEl.addEventListener('transitionend', (event) => {
+    if (event.propertyName === 'opacity') remove();
+  });
+  setTimeout(remove, 2400);
+}
+function dropLoad() {
+  releaseApp();
+  loadingEl?.remove();
+}
+
 function fail(msg) {
+  dropLoad();
   const el = document.getElementById('err');
   el.style.display = 'block';
   el.textContent = msg;
@@ -4141,10 +4217,12 @@ function mat4Mul(out, a, b) {
 }
 
 async function main() {
+  await paintLoad('Looking for a graphics device', 0.08);
   if (!navigator.gpu) fail('WebGPU is not available in this browser.');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) fail('No WebGPU adapter found.');
   const hasTS = adapter.features.has('timestamp-query');
+  await paintLoad('Starting the graphics device', 0.16);
   const device = await adapter.requestDevice({
     requiredFeatures: hasTS ? ['timestamp-query'] : [],
   });
@@ -4208,6 +4286,7 @@ async function main() {
   const lvl = (t, m, dim = '2d-array') => t.createView({ dimension: dim, baseMipLevel: m, mipLevelCount: 1 });
   const fullArr = (t) => t.createView({ dimension: '2d-array' });
 
+  await paintLoad('Preparing the sky and sea', 0.24);
   const [initPipe, evolvePipe, rowsPipe, colsPipe, simMipPipe, foamGenPipe, rgba8MipPipe,
     transPipe, msPipe, skyViewPipe, envPipe, cubeMipPipe, foamUpdPipe, arr16MipPipe, sunVisPipe] = await Promise.all([
     computePipe(SIM_INIT, 'sim init'),
@@ -4317,6 +4396,7 @@ async function main() {
   const transView = transLUT.createView();
   const msView = msLUT.createView();
   const skyView = skyLUT.createView();
+  await paintLoad('Loading the star catalogue', 0.42);
   const starMap = device.createTexture({
     label: 'Yale bright star catalogue',
     size: [STAR_MAP_WIDTH, STAR_MAP_HEIGHT],
@@ -4347,10 +4427,12 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const MSAA = 4;
   const HDR = 'rgba16float';
+  await paintLoad('Preparing the water', 0.52);
   const [oceanMod, skyMod, cloudMod, downMod, upMod, compMod] = await Promise.all([
     shader(OCEAN, 'ocean'), shader(SKY_BG, 'sky'), shader(CLOUD_LAYER, 'clouds'), shader(BLOOM_DOWN, 'bloom down'),
     shader(BLOOM_UP, 'bloom up'), shader(COMPOSITE, 'composite'),
   ]);
+  await paintLoad('Preparing the surface', 0.7);
   const oceanPipe = await device.createRenderPipelineAsync({
     label: 'ocean', layout: 'auto',
     vertex: {
@@ -4362,6 +4444,7 @@ async function main() {
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
     multisample: { count: MSAA },
   });
+  await paintLoad('Preparing the sky', 0.82);
   const skyPipe = await device.createRenderPipelineAsync({
     label: 'sky', layout: 'auto',
     vertex: { module: skyMod, entryPoint: 'vs' },
@@ -4376,6 +4459,7 @@ async function main() {
     fragment: { module: cloudMod, entryPoint: 'fs', targets: [{ format: HDR }] },
     primitive: { topology: 'triangle-list' },
   });
+  await paintLoad('Finishing the picture', 0.9);
   const downPipe = await device.createRenderPipelineAsync({
     label: 'bloom down', layout: 'auto',
     vertex: { module: downMod, entryPoint: 'vs' },
@@ -4709,6 +4793,7 @@ async function main() {
     if (e.code === 'KeyT') toggleShown('clock');
     if (e.code === 'KeyF') toggleShown('weather');
     if (e.code === 'KeyN') toggleCompassOverlay();
+    if (e.code === 'KeyK') toggleShown('music');
   });
   function shortcutField(target) {
     return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"]');
@@ -5178,6 +5263,7 @@ async function main() {
   // --------------------------------------------------------------------------------------
   // UI
   // --------------------------------------------------------------------------------------
+  await paintLoad('Opening the controls', 0.94);
   const panel = document.getElementById('panel');
   const settingsBtn = document.getElementById('settings');
   function setPanelOpen(open) {
@@ -5191,8 +5277,13 @@ async function main() {
     event.stopPropagation();
     setPanelOpen(false);
   });
+  const musicBtn = document.getElementById('music');
+  musicBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleShown('music');
+  });
   const panelBody = document.getElementById('panel-body');
-  const BOOL_KEYS = new Set(['sound', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+  const BOOL_KEYS = new Set(['sound', 'music', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
     'compass', 'compassTilt',
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
     'rain', 'rainFollow',
@@ -5303,6 +5394,10 @@ async function main() {
         ['rainWind', 'Wind', 0, 2, 0.01, 'rain'],
         ['rainSnap', 'Thunder snap', 0, 2, 0.01, 'rain'],
         ['rainRumble', 'Thunder rumble', 0, 2, 0.01, 'rain'],
+      ] },
+      { title: 'Music', settings: [
+        ['music', 'Background music', 'toggle', 'On', 'Off'],
+        ['musicVolume', 'Volume', 0, 100, 1, 'music'],
       ] },
     ] },
     { title: 'Widgets', groups: [
@@ -6081,6 +6176,7 @@ async function main() {
       ['Esc', 'Close settings'],
       ['H', 'Show or hide settings'],
       ['M', 'Turn sound on or off'],
+      ['K', 'Turn music on or off'],
       ['T', 'Show or hide the clock'],
       ['F', 'Show or hide the weather'],
       ['N', 'Show or hide the compass'],
@@ -6111,6 +6207,59 @@ async function main() {
   setInterval(refreshDynamicSky, 30000);
   if (P.sound) oceanAudio.setEnabled(true);
   applySoundPlayback();
+  // Deployed next to the page as media/track001.mp3. loop restarts the file at the end;
+  // the ended handler covers players that ignore the loop flag.
+  const soundtrack = new Audio('media/track001.mp3');
+  soundtrack.loop = true;
+  soundtrack.preload = 'auto';
+  soundtrack.hidden = true;
+  document.body.append(soundtrack);
+  let musicErrorLogged = false;
+  function playSoundtrack() {
+    const pending = soundtrack.play();
+    if (!pending) return;
+    pending.catch((err) => {
+      if (err && err.name === 'NotAllowedError') return;
+      if (musicErrorLogged) return;
+      musicErrorLogged = true;
+      log('music: ' + (err && err.message ? err.message : err));
+    });
+  }
+  function applyMusicVolume() {
+    soundtrack.volume = Math.min(1, Math.max(0, P.musicVolume / 100));
+  }
+  function applyMusicButton() {
+    musicBtn.setAttribute('aria-pressed', String(P.music));
+    musicBtn.textContent = P.music ? 'Music on' : 'Music off';
+  }
+  function applyMusic() {
+    applyMusicVolume();
+    applyMusicButton();
+    if (!P.music) {
+      soundtrack.pause();
+      return;
+    }
+    playSoundtrack();
+  }
+  soundtrack.addEventListener('ended', () => {
+    if (!P.music) return;
+    soundtrack.currentTime = 0;
+    playSoundtrack();
+  });
+  soundtrack.addEventListener('error', () => {
+    if (musicErrorLogged) return;
+    musicErrorLogged = true;
+    log('music: could not load media/track001.mp3');
+  });
+  // A saved "on" can load before the browser will allow sound. The next click or key starts it.
+  // The music button handles its own gesture, so a press that turns music off is not also a resume.
+  function resumeSoundtrack(event) {
+    if (event.target instanceof Element && event.target.closest('#music')) return;
+    if (P.music && soundtrack.paused) playSoundtrack();
+  }
+  addEventListener('pointerdown', resumeSoundtrack);
+  addEventListener('keydown', resumeSoundtrack);
+  applyMusic();
 
   const io = document.createElement('div');
   io.className = 'io';
@@ -6897,6 +7046,7 @@ async function main() {
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
       if (key === 'sound' || key === 'oceanPlayback' || key === 'rainPlayback') applySoundPlayback();
+      if (key === 'music') applyMusic();
       if (key === 'weather' && value === false && P.skyMode === 'dynamic') {
         P.weather = true;
         if (control) {
@@ -6963,6 +7113,7 @@ async function main() {
       control.output.textContent = control.input.value;
     }
     P[key] = value;
+    if (key === 'musicVolume') applyMusicVolume();
     if (key === 'rainIntensity') {
       showRainReadout();
       updateRainClouds();
@@ -6981,7 +7132,7 @@ async function main() {
       applyTiltAngle();
     }
     // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
-    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'music' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -7114,6 +7265,7 @@ async function main() {
   let last = performance.now();
   let fpsAcc = 0, fpsN = 0, fpsT = 0;
   let shooting = false;
+  let awaitingPicture = true;
 
   function encodeSim(cp) {
     cp.setPipeline(evolvePipe);
@@ -7485,6 +7637,11 @@ async function main() {
     }
     submitList[0] = enc.finish();
     device.queue.submit(submitList);
+    if (awaitingPicture) {
+      awaitingPicture = false;
+      reportLoad('Setting the sea', 1);
+      dismissLoad();
+    }
     if (doProbe) { probePending = true; probeRead.mapAsync(GPUMapMode.READ).then(onProbe, onProbeFail); }
     if (doTs) { tsPending = true; tsRead.mapAsync(GPUMapMode.READ).then(onTsMapped, onTsFail); }
     if (readBuf) saveShot(readBuf, Math.ceil(W * 4 / 256) * 256, true);
@@ -7522,10 +7679,17 @@ async function main() {
 
   resize();
   addEventListener('resize', resize);
+  reportLoad('Setting the sea', 0.97);
   requestAnimationFrame(frame);
 }
 
-main().catch((e) => { log('init failed: ' + (e && e.stack || e)); });
+main().catch((e) => {
+  dropLoad();
+  const msg = 'init failed: ' + (e && e.stack || e);
+  const el = document.getElementById('err');
+  if (el) { el.style.display = 'block'; el.textContent = msg; }
+  log(msg);
+});
 
 
 </script>

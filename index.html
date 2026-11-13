@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>fayling-web-ocean-pictureframe</title>
+<title>Ocean Picture Frame</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
@@ -20,7 +20,7 @@
   #toolbar button:hover, #toolbar button:focus-visible { opacity: 1; background: #18222ce6; }
   #toolbar button:focus-visible { outline: 2px solid #e2a04e; outline-offset: 2px; }
   #sound::before { content: '♪'; display: inline-block; width: 16px; opacity: .7; }
-  #sound.on, #settings[aria-expanded="true"] { border-color: #e2a04eaa; }
+  #sound.on, #music[aria-pressed="true"], #settings[aria-expanded="true"] { border-color: #e2a04eaa; }
   #sound.on::before { opacity: 1; }
   #panel { position: fixed; z-index: 3; right: 12px; top: 50px; width: 330px; max-height: calc(100vh - 60px);
            display: flex; flex-direction: column; overflow: hidden; border-radius: 8px;
@@ -213,26 +213,59 @@
     to { transform: translateY(-50%); }
   }
   .weather-error { padding: 11px 14px; font-size: 12px; opacity: .72; }
-  #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
+  #err { position: fixed; inset: 0; z-index: 40; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
+  #loading { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #000; color: #f7f4ee;
+             font-family: system-ui, sans-serif; transition: opacity 1.8s ease; }
+  #loading::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 38vh; pointer-events: none;
+                     background: radial-gradient(ellipse 70% 100% at 50% 100%, #3a2c1c 0%, #140f0c 46%, transparent 72%); }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading.done .loading-track::after { animation: none; }
+  #loading[hidden] { display: none; }
+  .loading-copy { position: relative; text-align: center; }
+  .loading-kicker { margin: 0 0 18px; padding-left: .32em; font: 300 12px/1 system-ui, sans-serif;
+                    letter-spacing: .32em; text-transform: uppercase; opacity: .55; }
+  #loading h1 { margin: 0; padding-left: .22em; font: 300 clamp(34px, 5vw, 56px)/1 system-ui, sans-serif;
+                letter-spacing: .22em; text-transform: uppercase; }
+  #loading-status { margin: 28px 0 0; min-height: 1.4em; font: 14px/1.4 system-ui, sans-serif; letter-spacing: .04em; opacity: .78; }
+  .loading-track { position: relative; width: min(240px, 64vw); height: 2px; margin: 20px auto 0; overflow: hidden; background: #f7f4ee1f; }
+  #loading-bar { display: block; height: 100%; background: #e2a04e; transform: scaleX(.04); transform-origin: left center;
+                 transition: transform .6s ease; }
+  .loading-track::after { content: ''; position: absolute; inset: 0;
+                          background: linear-gradient(90deg, transparent, #fff8, transparent);
+                          transform: translateX(-100%); animation: loading-sheen 1.6s ease-in-out infinite; }
+  @keyframes loading-sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @media (prefers-reduced-motion: reduce) {
+    #loading, #loading-bar { transition: none; }
+    .loading-track::after { display: none; }
+  }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hud">
+<div id="loading" aria-busy="true">
+  <div class="loading-copy">
+    <p class="loading-kicker">Picture frame</p>
+    <h1>Ocean</h1>
+    <p id="loading-status" aria-live="polite">Preparing the picture</p>
+    <div class="loading-track" aria-hidden="true"><span id="loading-bar"></span></div>
+  </div>
+</div>
+<canvas id="c" inert></canvas>
+<div id="hud" inert>
   <div id="sky-readout" hidden></div>
   <div id="fps">starting…</div>
-  <div class="help">left drag: look · left+right: reset view · WASD move · Space/E up · Q/C down · wheel up/down · Shift fast · F1 settings · H panel · M sound · T clock · F weather · N compass</div>
+  <div class="help">left drag: look · left+right: reset view · WASD move · Space/E up · Q/C down · wheel up/down · Shift fast · F1 settings · H panel · M sound · K music · T clock · F weather · N compass</div>
 </div>
-<div id="toolbar">
+<div id="toolbar" inert>
   <button id="sound" type="button" aria-pressed="false" title="Toggle procedural ocean audio (M)">Sound off</button>
+  <button id="music" type="button" aria-pressed="false" title="Turn background music on or off (K)">Music off</button>
   <button id="settings" type="button" aria-expanded="false" title="Show settings (F1)">Settings</button>
 </div>
-<time id="clock-widget" aria-label="Current time">
+<time id="clock-widget" aria-label="Current time" inert>
   <span class="clock-time"></span>
   <span class="clock-date"></span>
 </time>
-<aside id="weather-widget" data-position="bottom-left" aria-label="Current weather" aria-live="polite" hidden></aside>
-<div id="compass-widget" aria-label="Compass" hidden>
+<aside id="weather-widget" data-position="bottom-left" aria-label="Current weather" aria-live="polite" hidden inert></aside>
+<div id="compass-widget" aria-label="Compass" hidden inert>
   <div class="compass-heading" hidden></div>
   <div class="compass-window" hidden>
     <div class="compass-tape"></div>
@@ -240,7 +273,7 @@
   </div>
   <div class="compass-tilt" hidden></div>
 </div>
-<div id="panel" class="hidden">
+<div id="panel" class="hidden" inert>
   <div class="panel-bar">
     <span>Settings</span>
     <button id="close-settings" type="button" aria-label="Close settings" title="Close settings (Esc)">×</button>

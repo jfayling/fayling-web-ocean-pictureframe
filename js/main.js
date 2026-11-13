@@ -82,6 +82,8 @@ export const P = {
   audioSync: 1,
   audioStereo: 1,
   sound: false,
+  music: false,
+  musicVolume: 100,
   oceanPlayback: true,
   rainPlayback: true,
   showButtons: true,
@@ -132,7 +134,48 @@ export const P = {
 const DEFAULTS = { ...P };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
+const loadingEl = document.getElementById('loading');
+const loadingStatus = document.getElementById('loading-status');
+const loadingBar = document.getElementById('loading-bar');
+
+function reportLoad(message, amount) {
+  if (loadingStatus && loadingStatus.textContent !== message) loadingStatus.textContent = message;
+  if (loadingBar) loadingBar.style.transform = `scaleX(${amount})`;
+}
+// Two frames so the status paints before the next long compile. The timeout keeps startup
+// moving if the tab is not painting.
+function paintLoad(message, amount) {
+  reportLoad(message, amount);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 80);
+  });
+}
+function releaseApp() {
+  for (const id of ['c', 'hud', 'toolbar', 'clock-widget', 'weather-widget', 'compass-widget', 'panel']) {
+    document.getElementById(id)?.removeAttribute('inert');
+  }
+}
+function dismissLoad() {
+  if (!loadingEl || loadingEl.classList.contains('done')) return;
+  releaseApp();
+  loadingEl.classList.add('done');
+  loadingEl.setAttribute('aria-busy', 'false');
+  const remove = () => { if (loadingEl.isConnected) loadingEl.remove(); };
+  loadingEl.addEventListener('transitionend', (event) => {
+    if (event.propertyName === 'opacity') remove();
+  });
+  setTimeout(remove, 2400);
+}
+function dropLoad() {
+  releaseApp();
+  loadingEl?.remove();
+}
+
 function fail(msg) {
+  dropLoad();
   const el = document.getElementById('err');
   el.style.display = 'block';
   el.textContent = msg;
@@ -160,10 +203,12 @@ function mat4Mul(out, a, b) {
 }
 
 async function main() {
+  await paintLoad('Looking for a graphics device', 0.08);
   if (!navigator.gpu) fail('WebGPU is not available in this browser.');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) fail('No WebGPU adapter found.');
   const hasTS = adapter.features.has('timestamp-query');
+  await paintLoad('Starting the graphics device', 0.16);
   const device = await adapter.requestDevice({
     requiredFeatures: hasTS ? ['timestamp-query'] : [],
   });
@@ -227,6 +272,7 @@ async function main() {
   const lvl = (t, m, dim = '2d-array') => t.createView({ dimension: dim, baseMipLevel: m, mipLevelCount: 1 });
   const fullArr = (t) => t.createView({ dimension: '2d-array' });
 
+  await paintLoad('Preparing the sky and sea', 0.24);
   const [initPipe, evolvePipe, rowsPipe, colsPipe, simMipPipe, foamGenPipe, rgba8MipPipe,
     transPipe, msPipe, skyViewPipe, envPipe, cubeMipPipe, foamUpdPipe, arr16MipPipe, sunVisPipe] = await Promise.all([
     computePipe(SIM_INIT, 'sim init'),
@@ -336,6 +382,7 @@ async function main() {
   const transView = transLUT.createView();
   const msView = msLUT.createView();
   const skyView = skyLUT.createView();
+  await paintLoad('Loading the star catalogue', 0.42);
   const starMap = device.createTexture({
     label: 'Yale bright star catalogue',
     size: [STAR_MAP_WIDTH, STAR_MAP_HEIGHT],
@@ -366,10 +413,12 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const MSAA = 4;
   const HDR = 'rgba16float';
+  await paintLoad('Preparing the water', 0.52);
   const [oceanMod, skyMod, cloudMod, downMod, upMod, compMod] = await Promise.all([
     shader(OCEAN, 'ocean'), shader(SKY_BG, 'sky'), shader(CLOUD_LAYER, 'clouds'), shader(BLOOM_DOWN, 'bloom down'),
     shader(BLOOM_UP, 'bloom up'), shader(COMPOSITE, 'composite'),
   ]);
+  await paintLoad('Preparing the surface', 0.7);
   const oceanPipe = await device.createRenderPipelineAsync({
     label: 'ocean', layout: 'auto',
     vertex: {
@@ -381,6 +430,7 @@ async function main() {
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
     multisample: { count: MSAA },
   });
+  await paintLoad('Preparing the sky', 0.82);
   const skyPipe = await device.createRenderPipelineAsync({
     label: 'sky', layout: 'auto',
     vertex: { module: skyMod, entryPoint: 'vs' },
@@ -395,6 +445,7 @@ async function main() {
     fragment: { module: cloudMod, entryPoint: 'fs', targets: [{ format: HDR }] },
     primitive: { topology: 'triangle-list' },
   });
+  await paintLoad('Finishing the picture', 0.9);
   const downPipe = await device.createRenderPipelineAsync({
     label: 'bloom down', layout: 'auto',
     vertex: { module: downMod, entryPoint: 'vs' },
@@ -728,6 +779,7 @@ async function main() {
     if (e.code === 'KeyT') toggleShown('clock');
     if (e.code === 'KeyF') toggleShown('weather');
     if (e.code === 'KeyN') toggleCompassOverlay();
+    if (e.code === 'KeyK') toggleShown('music');
   });
   function shortcutField(target) {
     return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"]');
@@ -1197,6 +1249,7 @@ async function main() {
   // --------------------------------------------------------------------------------------
   // UI
   // --------------------------------------------------------------------------------------
+  await paintLoad('Opening the controls', 0.94);
   const panel = document.getElementById('panel');
   const settingsBtn = document.getElementById('settings');
   function setPanelOpen(open) {
@@ -1210,8 +1263,13 @@ async function main() {
     event.stopPropagation();
     setPanelOpen(false);
   });
+  const musicBtn = document.getElementById('music');
+  musicBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleShown('music');
+  });
   const panelBody = document.getElementById('panel-body');
-  const BOOL_KEYS = new Set(['sound', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
+  const BOOL_KEYS = new Set(['sound', 'music', 'oceanPlayback', 'rainPlayback', 'showButtons', 'showInfo', 'clock', 'clock24h', 'clockSeconds', 'clockDate',
     'compass', 'compassTilt',
     'weather', 'weatherTemp', 'weatherFeels', 'weatherPrecip', 'weatherHumidity', 'weatherWind', 'weatherForecast', 'weatherAlerts',
     'rain', 'rainFollow',
@@ -1322,6 +1380,10 @@ async function main() {
         ['rainWind', 'Wind', 0, 2, 0.01, 'rain'],
         ['rainSnap', 'Thunder snap', 0, 2, 0.01, 'rain'],
         ['rainRumble', 'Thunder rumble', 0, 2, 0.01, 'rain'],
+      ] },
+      { title: 'Music', settings: [
+        ['music', 'Background music', 'toggle', 'On', 'Off'],
+        ['musicVolume', 'Volume', 0, 100, 1, 'music'],
       ] },
     ] },
     { title: 'Widgets', groups: [
@@ -2100,6 +2162,7 @@ async function main() {
       ['Esc', 'Close settings'],
       ['H', 'Show or hide settings'],
       ['M', 'Turn sound on or off'],
+      ['K', 'Turn music on or off'],
       ['T', 'Show or hide the clock'],
       ['F', 'Show or hide the weather'],
       ['N', 'Show or hide the compass'],
@@ -2130,6 +2193,59 @@ async function main() {
   setInterval(refreshDynamicSky, 30000);
   if (P.sound) oceanAudio.setEnabled(true);
   applySoundPlayback();
+  // Deployed next to the page as media/track001.mp3. loop restarts the file at the end;
+  // the ended handler covers players that ignore the loop flag.
+  const soundtrack = new Audio('media/track001.mp3');
+  soundtrack.loop = true;
+  soundtrack.preload = 'auto';
+  soundtrack.hidden = true;
+  document.body.append(soundtrack);
+  let musicErrorLogged = false;
+  function playSoundtrack() {
+    const pending = soundtrack.play();
+    if (!pending) return;
+    pending.catch((err) => {
+      if (err && err.name === 'NotAllowedError') return;
+      if (musicErrorLogged) return;
+      musicErrorLogged = true;
+      log('music: ' + (err && err.message ? err.message : err));
+    });
+  }
+  function applyMusicVolume() {
+    soundtrack.volume = Math.min(1, Math.max(0, P.musicVolume / 100));
+  }
+  function applyMusicButton() {
+    musicBtn.setAttribute('aria-pressed', String(P.music));
+    musicBtn.textContent = P.music ? 'Music on' : 'Music off';
+  }
+  function applyMusic() {
+    applyMusicVolume();
+    applyMusicButton();
+    if (!P.music) {
+      soundtrack.pause();
+      return;
+    }
+    playSoundtrack();
+  }
+  soundtrack.addEventListener('ended', () => {
+    if (!P.music) return;
+    soundtrack.currentTime = 0;
+    playSoundtrack();
+  });
+  soundtrack.addEventListener('error', () => {
+    if (musicErrorLogged) return;
+    musicErrorLogged = true;
+    log('music: could not load media/track001.mp3');
+  });
+  // A saved "on" can load before the browser will allow sound. The next click or key starts it.
+  // The music button handles its own gesture, so a press that turns music off is not also a resume.
+  function resumeSoundtrack(event) {
+    if (event.target instanceof Element && event.target.closest('#music')) return;
+    if (P.music && soundtrack.paused) playSoundtrack();
+  }
+  addEventListener('pointerdown', resumeSoundtrack);
+  addEventListener('keydown', resumeSoundtrack);
+  applyMusic();
 
   const io = document.createElement('div');
   io.className = 'io';
@@ -2916,6 +3032,7 @@ async function main() {
       }
       if (key === 'sound') oceanAudio.setEnabled(value);
       if (key === 'sound' || key === 'oceanPlayback' || key === 'rainPlayback') applySoundPlayback();
+      if (key === 'music') applyMusic();
       if (key === 'weather' && value === false && P.skyMode === 'dynamic') {
         P.weather = true;
         if (control) {
@@ -2982,6 +3099,7 @@ async function main() {
       control.output.textContent = control.input.value;
     }
     P[key] = value;
+    if (key === 'musicVolume') applyMusicVolume();
     if (key === 'rainIntensity') {
       showRainReadout();
       updateRainClouds();
@@ -3000,7 +3118,7 @@ async function main() {
       applyTiltAngle();
     }
     // Twinkle is applied in the live sky each frame. The environment cube keeps the mean.
-    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
+    if (key !== 'starTwinkle' && kind !== 'audio' && kind !== 'rain' && kind !== 'music' && kind !== 'clock' && kind !== 'weather' && kind !== 'lapse' && kind !== 'aim') envFull = 2;
     keepManualSetting(key);
     rememberSettings();
     return true;
@@ -3133,6 +3251,7 @@ async function main() {
   let last = performance.now();
   let fpsAcc = 0, fpsN = 0, fpsT = 0;
   let shooting = false;
+  let awaitingPicture = true;
 
   function encodeSim(cp) {
     cp.setPipeline(evolvePipe);
@@ -3504,6 +3623,11 @@ async function main() {
     }
     submitList[0] = enc.finish();
     device.queue.submit(submitList);
+    if (awaitingPicture) {
+      awaitingPicture = false;
+      reportLoad('Setting the sea', 1);
+      dismissLoad();
+    }
     if (doProbe) { probePending = true; probeRead.mapAsync(GPUMapMode.READ).then(onProbe, onProbeFail); }
     if (doTs) { tsPending = true; tsRead.mapAsync(GPUMapMode.READ).then(onTsMapped, onTsFail); }
     if (readBuf) saveShot(readBuf, Math.ceil(W * 4 / 256) * 256, true);
@@ -3541,7 +3665,14 @@ async function main() {
 
   resize();
   addEventListener('resize', resize);
+  reportLoad('Setting the sea', 0.97);
   requestAnimationFrame(frame);
 }
 
-main().catch((e) => { log('init failed: ' + (e && e.stack || e)); });
+main().catch((e) => {
+  dropLoad();
+  const msg = 'init failed: ' + (e && e.stack || e);
+  const el = document.getElementById('err');
+  if (el) { el.style.display = 'block'; el.textContent = msg; }
+  log(msg);
+});
