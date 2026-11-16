@@ -1,4 +1,6 @@
 node_modules/
+# GitHub Pages output written by npm run build:pages
+_site/
 # local screenshot captures written by server.mjs (/__shot) and test shots
 shots/
 # local tooling

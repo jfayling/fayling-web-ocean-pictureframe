@@ -1,0 +1,69 @@
+name: Bug report
+description: Something renders wrong, does not start, or behaves unexpectedly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If the page shows an error instead of the ocean, check
+        [Browser support and troubleshooting](https://github.com/jfayling/fayling-web-ocean-pictureframe/blob/main/docs/BROWSER_SUPPORT.md#troubleshooting) first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the full URL with any parameters, or a Share link from the settings panel.
+      placeholder: |
+        1. Open https://jfayling.github.io/fayling-web-ocean-pictureframe/app/?skyMode=static
+        2. Press F1 and turn Rain on
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How are you running it?
+      options:
+        - GitHub Pages live demo
+        - ocean.html or ocean.min.html opened from disk
+        - npm start (from source)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: Chrome 131.0.6778.86
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      description: From chrome://gpu or your system settings.
+      placeholder: NVIDIA GeForce RTX 4070, driver 566.14
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error overlay or console output
+      description: Copy any text from the red error screen or the browser console (F12).
+      render: text
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or recordings
+      description: Drag images or a short clip here.

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Browser support and troubleshooting
+    url: https://github.com/jfayling/fayling-web-ocean-pictureframe/blob/main/docs/BROWSER_SUPPORT.md
+    about: Fixes for "WebGPU is not available", missing GPU adapters, and low frame rates.
+  - name: Upstream renderer (Noniv/web-ocean)
+    url: https://github.com/Noniv/web-ocean
+    about: The original WebGPU ocean renderer this project extends.

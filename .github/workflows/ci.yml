@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Syntax-check the JavaScript sources
+        run: for f in js/*.js js/wgsl/*.js build.mjs server.mjs scripts/*.mjs; do node --check "$f"; done
+      - run: npm run build
+      - name: Standalone bundles are up to date
+        run: |
+          if ! git diff --quiet -- ocean.html ocean.min.html; then
+            echo "::error::ocean.html or ocean.min.html is stale. Run npm run build and commit the result."
+            git diff --stat -- ocean.html ocean.min.html
+            exit 1
+          fi
+      - run: npm run check
+      - run: node scripts/build-pages.mjs

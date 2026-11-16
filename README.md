@@ -1,31 +1,111 @@
-# fayling-web-ocean-pictureframe
+# Ocean Picture Frame
 
-A real-time ocean picture frame for a large screen. It draws a living sea — simulated waves, whitecaps, sun glitter, and a physically based sky — and keeps a clock, live weather, and procedural surf on the glass with it. The view is meant to stay up on a television.
+**A real-time WebGPU ocean screensaver for your TV or monitor, with simulated waves, a live sun, moon, and stars, real weather, and procedural surf sound, all in one self-contained HTML file.**
 
-This project is a fork of [web-ocean](https://github.com/Noniv/web-ocean) by [Maksymilian Dendura](https://github.com/Noniv). The wave simulation, water shading, atmosphere, and HDR post-processing come from that renderer. This fork adds the picture-frame overlays, ocean sound that follows the water under the camera, and a sky that can follow a real place and time.
+[![CI](https://github.com/jfayling/fayling-web-ocean-pictureframe/actions/workflows/ci.yml/badge.svg)](https://github.com/jfayling/fayling-web-ocean-pictureframe/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![WebGPU](https://img.shields.io/badge/WebGPU-WGSL-005a9c)
+![No runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)
 
-The picture frame keeps a clock and live weather on the glass. This time lapse is Newnan, Georgia, starting at 7:56 PM on October 18, 2026. The clock keeps the real time, the weather card sits at the top left, and the sky runs forward from that moment. One real second advances the sky by 20 minutes, so the minute-long clip covers the night, the next morning, and the following afternoon.
+[![Night turns to sunrise and day over the rendered ocean, with the clock and live weather card on screen. Click to open the full time lapse with sound.](docs/preview.gif)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
 
-[![Time lapse starting the evening of October 18, 2026. Open the clip to hear the surf.](docs/timelapse.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
+<sub>A real recording of the app, sped up: night gives way to sunrise and then day. Click it to open the 60-second time lapse with ocean sound.</sub>
 
-[Play the 60-second time lapse with ocean sound](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse)
+### [▶ Try the live demo](https://jfayling.github.io/fayling-web-ocean-pictureframe/app/) · [Watch the time lapse](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse) · [Download](#download--run-locally)
 
-The clip is hosted on GitHub Pages, where the browser can play it with the procedural surf included. Press play and use the sound control to hear the water.
+The live demo needs a desktop browser with WebGPU, such as recent Chrome or Edge. See [Browser and hardware requirements](#browser-and-hardware-requirements).
 
-## Run it
+This project extends [web-ocean](https://github.com/Noniv/web-ocean) by [Maksymilian Dendura](https://github.com/Noniv). The wave simulation, water shading, atmosphere, and HDR post-processing come from that renderer. This repository turns it into a picture frame for a large screen, adding live weather, a sky that follows a real place and time, procedural sound, and on-screen widgets. [What comes from where](#upstream-renderer-and-additions-in-this-repository) lists the split in detail.
 
-You need a recent Chrome with WebGPU and a reasonably capable GPU. On a laptop, force Chrome onto the dedicated GPU in the Windows graphics settings, or it will fall back to the integrated one.
+## Contents
 
-Open `ocean.html` directly in the browser. `ocean.min.html` is the same page, minified. Both are self-contained and work from `file://`.
+- [Download / run locally](#download--run-locally)
+- [Features](#features)
+- [Browser and hardware requirements](#browser-and-hardware-requirements)
+- [Screenshots](#screenshots)
+- [Controls](#controls)
+- [Advanced configuration](#advanced-configuration)
+- [Technical architecture](#technical-architecture)
+- [Building from source](#building-from-source)
+- [Related projects: Living Frames](#related-projects-living-frames)
+- [Contributing](#contributing)
+- [License and attribution](#license-and-attribution)
+
+## Download / run locally
+
+The whole app is a single HTML file. It has no install step and no runtime dependencies, and it works when opened straight from disk (`file://`).
+
+1. Download `ocean.html` (readable) or `ocean.min.html` (minified, same behavior) from the [latest release](https://github.com/jfayling/fayling-web-ocean-pictureframe/releases/latest), or from the root of this repository.
+2. Open it in a browser with WebGPU.
+3. Press **F11** for full screen and **F1** for settings.
+
+Optional: for the background music, create a `media` folder next to the HTML file and put [`track001.mp3`](media/track001.mp3) in it. Everything else, including the ocean and rain sound, is generated in the browser, and the page works without the track.
 
 To run from source:
 
 ```
+git clone https://github.com/jfayling/fayling-web-ocean-pictureframe.git
+cd fayling-web-ocean-pictureframe
 npm install
 npm start        # serves http://localhost:8080/
 ```
 
-After editing anything under `js/`, run `npm run build` to regenerate both bundles. The minified build strips WGSL comments and whitespace and minifies the JavaScript with esbuild.
+`npm start` takes an optional port: `node server.mjs 8091`.
+
+### On a television
+
+The view is meant to stay up on a television or a wall-mounted monitor. A small PC or a laptop plugged into the TV can run it in a full-screen browser. Turn off **Onscreen information** (the default) so the screen shows only the ocean, the clock, the compass, and the weather. `?ui=0` in the URL also hides the buttons for that visit. On a laptop, force the browser onto the dedicated GPU in the Windows graphics settings, or it will fall back to the integrated one.
+
+## Features
+
+**Ocean rendering**
+- Tessendorf FFT ocean with six cascades, a JONSWAP wind sea, and a long-crested swell, computed on the GPU every frame
+- Whitecaps where the waves fold, foam that drifts downwind and breaks into streaks, and subsurface glow on backlit crests
+- Sun and moon glitter paths that widen with distance and settle into a sheen at the horizon, without aliasing
+- Rain, thunderstorms with lightning, and hurricanes, with ripples and splashes on the water
+
+**Sky**
+- Physically based atmosphere with aerosol haze and two independently moving cloud layers
+- Sun and moon placed for a real location and time, live or at a chosen date, or as a time lapse
+- A phased moon with maria, earthshine, and horizon reddening
+- 8,404 real stars from the Yale Bright Star Catalogue that rise and set with local sidereal time and twinkle near the horizon
+
+**Picture frame**
+- Clock, compass, and weather widgets you can move, resize, and restyle
+- Live weather from Open-Meteo, with a three-hour forecast and U.S. National Weather Service alerts
+- Rain that can follow the current weather
+- Settings saved in the browser, with JSON export and import and shareable configuration links
+
+**Sound**
+- Procedural ocean sound from the Web Audio API that follows the simulated water under the camera, with no audio files
+- Procedural rain, drops, wind, and thunder timed to the lightning distance
+- Optional looping background music
+
+**Distribution**
+- One self-contained HTML file that runs from `file://`, a USB stick, or any static host
+- No runtime dependencies. The only build tool is esbuild, used for minification.
+
+## Browser and hardware requirements
+
+| | Requirement |
+|---|---|
+| Browser | A desktop browser with WebGPU. Chrome and Edge 113 or later work on Windows, macOS, and ChromeOS. Other browsers and platforms vary; see [docs/BROWSER_SUPPORT.md](docs/BROWSER_SUPPORT.md). |
+| GPU | A reasonably capable discrete or recent integrated GPU. The renderer runs six 256×256 FFT cascades, a 17-level terrain mesh, and 4× MSAA in HDR every frame. |
+| Network | Optional. Weather, alerts, and place lookups need a connection. The ocean and sky render offline, and coordinates are cached after the first lookup. |
+| Display | Any size. The defaults are tuned for a 1080p to 4K television viewed from across a room. |
+
+If the page shows an error instead of the ocean, the browser probably could not get a WebGPU device. [docs/BROWSER_SUPPORT.md](docs/BROWSER_SUPPORT.md#troubleshooting) covers the usual fixes, such as enabling hardware acceleration, selecting the dedicated GPU, and updating drivers.
+
+## Screenshots
+
+All images are captures of the running app.
+
+| | |
+|---|---|
+| ![Sunset over the ocean with a bright glitter path](docs/hero.png) | ![Moonlit ocean under a field of stars](docs/screenshot-night.jpg) |
+| A low sun and its glitter path | Static (Night) sky with moonlight and stars |
+| ![Rain streaks over a rough sea during a thunderstorm](docs/screenshot-storm.jpg) | ![The ocean with the clock and live weather card](docs/pictureframe.jpg) |
+| Thunderstorm rain | Clock and live weather widgets |
 
 ## Controls
 
@@ -53,7 +133,7 @@ Sound, Music, and Settings sit together at the top right. They use the same surf
 
 `ui=0` in the URL hides both the HUD and the buttons for that visit.
 
-## Settings
+## Advanced configuration
 
 The panel is an accordion. The sections are **General**, **Sound**, **Widgets**, **Sky**, and **Ocean**. Opening one closes the others, and the groups inside a section work the same way. Clock, Compass, and Weather are groups inside Widgets. Rain is a group inside Sky, after Atmosphere. General lists the keyboard and mouse shortcuts. The pictures show the controls for that part of the panel.
 
@@ -61,9 +141,21 @@ The panel is an accordion. The sections are **General**, **Sound**, **Widgets**,
 
 Settings are saved in the browser and restored on refresh. A URL parameter overrides the saved value for that visit only. The camera is not saved. **Export** downloads every current setting as `ocean-settings.json`. **Import** applies the recognized values in that file and leaves every omitted setting unchanged. Booleans such as `sound`, `music`, `oceanPlayback`, `rainPlayback`, `showButtons`, and `showInfo` accept `true` or `false`. An older file that still has `rainThunder` is read as both thunder snap and thunder rumble. **Share link** copies a URL whose `s` parameter contains the full non-default configuration as base64url-encoded JSON. Only values that differ from the defaults are stored; opening the link restores the whole configuration for that visit, in place of the settings saved in the browser. The same `rainThunder` split applies to a shared link and to a saved session. Export and Share keep the manual values behind a lock: Static settings while a Dynamic mode is active, the clouds from before a rain deck, the wind, swell, chop, foam, and haze from before a hurricane, and the rain switch, intensity, style, and lightning from before a time lapse. Import writes those locked values back into the saved setup, so turning the mode or the storm off restores them. **Reset to defaults** restores every setting and the camera to the built-in values, with sound off, and writes those defaults into the saved session.
 
-URL parameters are handy for testing. `?w=2560&h=1440` forces the render resolution, `cam=x,y,z,yawDeg,pitchDeg` sets the camera, `fov=deg` sets the field of view, and any settings key works too, for example `windSpeed=12&swellHs=2&sunElev=8`.
-
 When a mode is Dynamic, Date and time, or Time lapse, the controls that mode calculates stay on screen, show the calculated values, and cannot be edited. They become editable again when you choose Static.
+
+### URL parameters
+
+URL parameters are handy for testing and for kiosk setups. Any settings key works, and the value applies to that visit only.
+
+| Parameter | Effect |
+|---|---|
+| `w=2560&h=1440` | Force the render resolution |
+| `cam=x,y,z,yawDeg,pitchDeg` | Set the camera |
+| `fov=deg` | Set the field of view |
+| `ui=0` | Hide the HUD and the buttons |
+| `skyMode=static`, `day`, `night`, `dynamic`, `dated`, `lapse` | Choose the sky behavior |
+| `windSpeed=12&swellHs=2&sunElev=8` | Any other settings key, for example the wind, the swell, and the sun |
+| `s=…` | A full configuration from **Share link** |
 
 ### Sound
 
@@ -87,7 +179,7 @@ Sound starts off. **Playback** at the top of this section, the Sound button, and
 
 Clock, Compass, and Weather are the picture-frame overlays. Each is a group inside Widgets.
 
-### Clock
+#### Clock
 
 ![Clock display and appearance settings](docs/settings-clock.png)
 
@@ -95,13 +187,13 @@ The clock is a picture-frame overlay, enabled by default, and it stays up when O
 
 The clock shows the actual current time. In Date and time and Time lapse modes it does not follow the sky's simulated moment.
 
-### Compass
+#### Compass
 
 ![Compass display settings](docs/settings-compass.png)
 
 The compass is on by default and sits along the top edge. It can move to the bottom. **Compass (°)** aims the view, and **Tilt (°)** sets the pitch. **Show tilt** puts that pitch on the compass. Dragging the view updates both. **N** shows or hides it. On a placed sky, north is geographic: north of the equator the default view looks south, so straight ahead reads 180. A static sky treats straight ahead as north.
 
-### Weather
+#### Weather
 
 ![Weather location, units, and information settings](docs/settings-weather.png)
 
@@ -146,7 +238,7 @@ Clouds are two independently moving layers, a broken low cumulus and a fibrous h
 
 In Dynamic / real-world mode every cloud control follows a deterministic, location-dependent weather pattern. Synoptic systems evolve over several simulated days, with persistent nighttime cloud cover, daytime convective growth, changing cloud bases and density, plausible low/high-level wind shear, and faster high-level winds. Date and time reproduces the same conditions for the same place and instant, while Time lapse advances the weather with the simulated sky. This is a weather model rather than a live observation feed. The manual cloud controls stay visible but cannot be edited while Dynamic is selected, and the previous manual values return when Static is selected again. Cloud motion is accumulated a little at a time, so a change in wind or the periodic wave reset does not jump the whole layer.
 
-### Rain
+#### Rain
 
 ![Rain weather, surface, and storm settings](docs/settings-rain.png)
 
@@ -166,7 +258,20 @@ Time lapse turns rain on and off with the simulated sky. Showers last a few hour
 
 Wind, swell, and water. Wind speed, direction, and fetch shape the wind sea. Swell height, wavelength, and direction add a long-crested swell. Choppiness, turbidity, and foam tune the surface.
 
-## How it works
+## Technical architecture
+
+### Upstream renderer and additions in this repository
+
+| From [Noniv/web-ocean](https://github.com/Noniv/web-ocean) | Added in this repository |
+|---|---|
+| Tessendorf FFT wave simulation and the CDLOD ocean mesh | Clock, compass, and weather widgets, with National Weather Service alerts |
+| Water shading: LEAN-mapped glitter, reflections, subsurface glow, and whitecaps | Procedural ocean sound driven by the wave probe, plus rain and thunder audio and background music |
+| Hillaire-style atmosphere and the two flat cloud layers | Placed sky modes: Dynamic / real-time, Date and time, and Time lapse, for any location |
+| HDR post-processing: bloom, AgX tone mapping, and dithering | The phased moon and the 8,404-star Yale Bright Star Catalogue sky |
+| Free-floating camera | Rain, thunderstorms, lightning, and hurricanes, including rain ripples on the water |
+| | Dynamic, location-dependent cloud and star behavior |
+| | The settings panel, saved settings, export and import, and share links |
+| | The loading screen, the standalone HTML bundles, and the GitHub Pages site |
 
 ### Waves
 
@@ -195,13 +300,13 @@ A celestial pass draws the phased moon and samples a color star map generated in
 
 The scene renders in HDR with 4× MSAA. Post-processing adds an 8-level bloom, AgX tone mapping, a slight white balance shift, and dithering.
 
-## Performance
+### Performance
 
 At 2560 by 1440 on an RTX 5070 Ti, the original renderer took about 6 to 8 ms of GPU time per frame, measured while other programs were also using the GPU. The HUD shows FPS and GPU time when the browser supports `timestamp-query` and Onscreen information is enabled.
 
 The per-frame code reuses preallocated typed arrays and descriptors, so the garbage collector has almost nothing to do. The only recurring allocations are the objects WebGPU itself requires, such as the swap-chain view and command buffers.
 
-## Known limitations
+### Known limitations
 
 - Far water is still somewhat darker than the bright horizon sky above it.
 - The water is tuned toward turbid coastal water. The "Water turbidity" slider gives darker, bluer deep water when turned down.
@@ -211,13 +316,7 @@ The per-frame code reuses preallocated typed arrays and descriptors, so the garb
 - A five-digit number is read as a US ZIP code. Postal codes elsewhere need a country (`2000, Australia`), or use the city name. Very small places can be entered as latitude and longitude. City search uses English names.
 - U.S. National Weather Service alerts are shown only for locations in the United States.
 
-## How the original renderer was made
-
-Maksymilian Dendura built [web-ocean](https://github.com/Noniv/web-ocean) with Claude Code (Opus 5.5). The goal was the most realistic water it could produce, in WebGPU, with a floating camera. The architecture and implementation were left to the model. It checked its own work by rendering screenshots in headless Chrome and having separate critic subagents review them. Feedback along the way, mainly on the clouds, led to replacing volumetric clouds with the flat layers and later fixing their edge aliasing.
-
-The picture-frame additions in this fork — sound, clock, compass, weather, rain, placed sky modes, the moon and stars, and the settings panel — were built on top of that renderer.
-
-## Repository layout
+### Repository layout
 
 | Path | Contents |
 |---|---|
@@ -226,14 +325,58 @@ The picture-frame additions in this fork — sound, clock, compass, weather, rai
 | `js/audio.js` | Procedural ocean and rain audio driven by the wave probe |
 | `js/astronomy.js` | Sun, moon, and star placement from time and location |
 | `js/star-catalog.js` | Compact public-domain Yale Bright Star Catalogue and star-map generation |
+| `js/place.js` | Place search, geocoding, and the cache for ZIP codes, postal codes, cities, and coordinates |
 | `js/weather.js` | Weather card and National Weather Service alerts |
 | `js/wgsl/` | Shaders as JavaScript modules: `sim.js` (waves and foam), `sky.js` (atmosphere and clouds), `rain.js` (drops, ripples, streaks, and lightning), `ocean.js` (surface and sky pass), `post.js` (bloom and tone mapping), `common.js` (shared structs) |
+| `media/` | The optional background music track |
+| `ocean.html`, `ocean.min.html` | The standalone builds, committed so they can be downloaded directly |
 | `server.mjs` | Tiny static server for development |
 | `build.mjs` | Builds `ocean.html` and `ocean.min.html` |
-| `docs/` | Time-lapse clip, settings screenshots, and the GitHub Pages player |
+| `scripts/` | `check.mjs` (bundle and link checks) and `build-pages.mjs` (assembles the GitHub Pages site) |
+| `docs/` | The GitHub Pages landing page, time-lapse clip, screenshots, settings screenshots, and browser support notes |
 
-## License
+## Building from source
+
+Requirements: Node.js 18 or later. The only dependency is esbuild, used at build time for minification.
+
+```
+npm ci                # install esbuild from the lockfile
+npm start             # dev server at http://localhost:8080/ serving index.html and js/ directly
+npm run build         # regenerate ocean.html and ocean.min.html
+npm run check         # verify the bundles are self-contained and the docs have no broken links
+npm run build:pages   # build, then assemble the GitHub Pages site in _site/
+```
+
+After editing anything under `js/` or `index.html`, run `npm run build` and commit the regenerated `ocean.html` and `ocean.min.html`. CI fails when they are out of date. The minified build strips WGSL comments and whitespace and minifies the JavaScript with esbuild.
+
+The GitHub Pages site serves `docs/` as the landing page and `ocean.min.html` at [`/app/`](https://jfayling.github.io/fayling-web-ocean-pictureframe/app/), deployed by [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+
+## Related projects: Living Frames
+
+Ocean Picture Frame is one of three open-source, real-time GPU displays meant to stay up on a television or monitor. Each one stands alone.
+
+| Project | What it shows | Live demo |
+|---|---|---|
+| **[Ocean Picture Frame](https://github.com/jfayling/fayling-web-ocean-pictureframe)** (this repository) | A real-time WebGPU ocean with a live sky, weather, and sound | [Open](https://jfayling.github.io/fayling-web-ocean-pictureframe/app/) |
+| **[Scenery Picture Frame](https://github.com/jfayling/fayling-web-scenery-pictureframe)** | Cinematic procedural landscapes with autonomous aerial flyovers over forests, mountains, canyons, and lunar terrain | [Open](https://jfayling.github.io/fayling-web-scenery-pictureframe/) |
+| **[Reef Aquarium](https://github.com/jfayling/fayling-web-fishtank-pictureframe)** | A living reef tank where twelve fish species steer themselves over procedural rock and coral | [Open](https://jfayling.github.io/fayling-web-fishtank-pictureframe/) |
+
+## Contributing
+
+Bug reports, feature ideas, and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the development loop, the build and check commands, and how to report a GPU-specific problem. Please include your browser, operating system, and GPU when reporting rendering issues.
+
+If you enjoy the project, starring the repository helps other people find it.
+
+## License and attribution
 
 MIT. See [LICENSE](LICENSE).
 
-Copyright (c) 2026 Maksymilian Dendura. This fork keeps that license and that copyright notice. The original project is [github.com/Noniv/web-ocean](https://github.com/Noniv/web-ocean).
+Copyright (c) 2026 Maksymilian Dendura. This repository keeps that license and that copyright notice. The original project is [github.com/Noniv/web-ocean](https://github.com/Noniv/web-ocean).
+
+Star positions come from the public-domain Yale Bright Star Catalogue. Weather data comes from [Open-Meteo](https://open-meteo.com/), [Zippopotam.us](https://api.zippopotam.us/), and the U.S. [National Weather Service](https://api.weather.gov/).
+
+### How the original renderer was made
+
+Maksymilian Dendura built [web-ocean](https://github.com/Noniv/web-ocean) with Claude Code (Opus 5.5). The goal was the most realistic water it could produce, in WebGPU, with a floating camera. The architecture and implementation were left to the model. It checked its own work by rendering screenshots in headless Chrome and having separate critic subagents review them. Feedback along the way, mainly on the clouds, led to replacing volumetric clouds with the flat layers and later fixing their edge aliasing.
+
+The picture-frame additions in this repository — sound, clock, compass, weather, rain, placed sky modes, the moon and stars, and the settings panel — were built on top of that renderer.

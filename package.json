@@ -1,13 +1,25 @@
 {
   "name": "fayling-web-ocean-pictureframe",
   "version": "1.0.0",
-  "description": "Large-screen WebGPU ocean picture frame forked from Noniv/web-ocean: FFT waves, placed sun and moon, procedural sound, clock, and live weather.",
+  "description": "Real-time WebGPU ocean screensaver with simulated waves, dynamic sky, live weather, procedural audio, and customizable digital picture-frame widgets.",
   "license": "MIT",
   "private": true,
   "type": "module",
+  "homepage": "https://jfayling.github.io/fayling-web-ocean-pictureframe/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jfayling/fayling-web-ocean-pictureframe.git"
+  },
+  "bugs": "https://github.com/jfayling/fayling-web-ocean-pictureframe/issues",
+  "keywords": ["webgpu", "wgsl", "ocean-simulation", "screensaver", "procedural-generation", "web-audio", "weather"],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.mjs",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "check": "node scripts/check.mjs",
+    "build:pages": "node build.mjs && node scripts/build-pages.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

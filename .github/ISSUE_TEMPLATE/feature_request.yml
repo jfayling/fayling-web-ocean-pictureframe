@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a new widget, sky or weather effect, setting, or improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to see?
+      description: Describe the feature and how it would look or behave on screen.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help?
+      description: For example, how you use the picture frame, or what it would add on a television.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or references
+      description: Other approaches you considered, or photos and references of the effect.
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: This can work without adding runtime dependencies, and the app stays a single self-contained HTML file.
