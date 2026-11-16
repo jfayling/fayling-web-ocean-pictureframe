@@ -375,6 +375,10 @@ Copyright (c) 2026 Maksymilian Dendura. This repository keeps that license and t
 
 Star positions come from the public-domain Yale Bright Star Catalogue. Weather data comes from [Open-Meteo](https://open-meteo.com/), [Zippopotam.us](https://api.zippopotam.us/), and the U.S. [National Weather Service](https://api.weather.gov/).
 
+### Music
+
+The optional background track, [`media/track001.mp3`](media/track001.mp3), was generated with [Suno](https://suno.com) and downloaded from a paid Suno subscription. It is not covered by this project's MIT license. Its use is governed by Suno's Terms of Service, which grant commercial use rights for songs downloaded on a paid plan. The app works without the track.
+
 ### How the original renderer was made
 
 Maksymilian Dendura built [web-ocean](https://github.com/Noniv/web-ocean) with Claude Code (Opus 5.5). The goal was the most realistic water it could produce, in WebGPU, with a floating camera. The architecture and implementation were left to the model. It checked its own work by rendering screenshots in headless Chrome and having separate critic subagents review them. Feedback along the way, mainly on the clouds, led to replacing volumetric clouds with the flat layers and later fixing their edge aliasing.
