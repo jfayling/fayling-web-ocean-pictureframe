@@ -7,9 +7,9 @@
 ![WebGPU](https://img.shields.io/badge/WebGPU-WGSL-005a9c)
 ![No runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)
 
-[![Thirty seconds of the running app: sunrise over the water, a storm, the clock and weather card, then a moonlit sea. Click to play, with the app's own surf and thunder.](docs/ocean-launch-poster.jpg)](docs/ocean-launch-landscape.mp4)
+[![Thirty seconds of the running app: sunrise over the water, a storm, the clock and weather card, then a moonlit sea. Click to play, with the app's own surf and thunder.](docs/ocean-launch-poster.jpg)](https://jfayling.github.io/fayling-web-ocean-pictureframe/#launch)
 
-<sub>A 30-second recording of the app. Click the image to play it, with the app's own surf, rain, and thunder. The [60-second time lapse](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse) is still on the project site.</sub>
+<sub>A 30-second recording of the app. Click the image to play it, with the app's own surf, rain, and thunder. The [60-second time lapse](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse) is on the same page.</sub>
 
 ### [▶ Try the live demo](https://jfayling.github.io/fayling-web-ocean-pictureframe/app/) · [Watch the time lapse](https://jfayling.github.io/fayling-web-ocean-pictureframe/#timelapse) · [Download](#download--run-locally)
 
