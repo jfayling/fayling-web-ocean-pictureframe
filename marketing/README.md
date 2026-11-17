@@ -11,6 +11,14 @@ This folder produces two 30-second promo videos for the app, plus a thumbnail fo
 
 The pipeline is separate from the app. It has its own `package.json`, it loads the app through the repository's existing `server.mjs`, and it changes nothing in `js/`, `index.html`, or the standalone builds. The rendered MP4s and everything under `build/` are listed in the repository `.gitignore`, so they are never committed by accident.
 
+The copy that the README and the project site play is a smaller encode, committed at `docs/ocean-launch-landscape.mp4` (1920×1080, 30 fps, CRF 28, AAC 96 kb/s, about 11 MB), with `docs/ocean-launch-poster.jpg` as its poster. Rebuild it from the master after a new landscape render:
+
+```bash
+ffmpeg -i videos/ocean-launch-landscape.mp4 -vf fps=30 -c:v libx264 -preset slow -crf 28 \
+  -pix_fmt yuv420p -profile:v high -movflags +faststart -c:a aac -b:a 96k \
+  ../docs/ocean-launch-landscape.mp4
+```
+
 ## Requirements
 
 - Node.js 20 or newer.
