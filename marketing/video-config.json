@@ -1,0 +1,621 @@
+{
+  "$comment": "Storyboard for the promo videos. Times are seconds. Every scene is rendered by the real app; `app` keys are the app's own settings (URL parameters). See marketing/README.md.",
+  "repo": "jfayling/fayling-web-ocean-pictureframe",
+  "capture": {
+    "headless": true,
+    "browserPath": "",
+    "port": 8093,
+    "timezone": "America/New_York",
+    "locale": "en-US",
+    "seed": 20261116,
+    "warmupSeconds": 6,
+    "settleMs": 800,
+    "imageFormat": "jpeg",
+    "jpegQuality": 95,
+    "network": "auto",
+    "intermediateCrf": 12,
+    "retries": 2
+  },
+  "paths": {
+    "build": "build",
+    "fixtures": "fixtures/net"
+  },
+  "app": {
+    "page": "index.html",
+    "defaults": {
+      "ui": 0,
+      "sound": true,
+      "music": false,
+      "showInfo": false,
+      "showButtons": false,
+      "clock": false,
+      "compass": false,
+      "compassTilt": false,
+      "weather": false,
+      "rainMode": "static",
+      "zipCode": "30265",
+      "weatherZip": "30265"
+    }
+  },
+  "audio": {
+    "enabled": true,
+    "sampleRate": 46080,
+    "outputSampleRate": 48000,
+    "loudnessLUFS": -16,
+    "truePeak": -1.5,
+    "fadeIn": 0.15,
+    "fadeOut": 1.2,
+    "bitrate": "192k"
+  },
+  "video": {
+    "transition": 0.5,
+    "crf": 17,
+    "preset": "slow",
+    "duration": 30
+  },
+  "formats": {
+    "landscape": {
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "output": "videos/ocean-launch-landscape.mp4",
+      "thumbnail": "videos/ocean-thumbnail-landscape.jpg"
+    },
+    "vertical": {
+      "width": 1080,
+      "height": 1920,
+      "fps": 30,
+      "output": "videos/ocean-launch-vertical.mp4",
+      "thumbnail": "videos/ocean-thumbnail-vertical.jpg"
+    }
+  },
+  "titles": {
+    "font": "'Inter', 'Segoe UI Variable Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif",
+    "colors": {
+      "text": "#ffffff",
+      "ocean": "#3aa0ff",
+      "cyan": "#6fe6ff",
+      "gold": "#ffd59a"
+    },
+    "fadeIn": 0.45,
+    "fadeOut": 0.4,
+    "landscape": {
+      "headline": 78,
+      "reveal": 116,
+      "sub": 44,
+      "kicker": 28,
+      "url": 54,
+      "center": 0.24,
+      "urlCenter": 0.28
+    },
+    "vertical": {
+      "headline": 70,
+      "reveal": 108,
+      "sub": 42,
+      "kicker": 30,
+      "url": 50,
+      "center": 0.25,
+      "urlCenter": 0.3
+    },
+    "scrimStrength": 0.34,
+    "scrimHeight": 26
+  },
+  "thumbnail": {
+    "scene": "hook",
+    "at": 0.6,
+    "headline": "THIS OCEAN\nISN'T REAL",
+    "sub": "IT'S WEBGPU",
+    "tag": "REAL-TIME • OPEN SOURCE"
+  },
+  "scenes": [
+    {
+      "id": "hook",
+      "duration": 4,
+      "app": {
+        "skyMode": "static",
+        "sunElev": 3.2,
+        "sunAzim": 0,
+        "cloudMode": "static",
+        "clouds": 0.32,
+        "veil": 0.3,
+        "windSpeed": 9,
+        "swellHs": 2.2,
+        "foam": 1.2
+      },
+      "camera": {
+        "position": [
+          0,
+          3.2,
+          0
+        ],
+        "yaw": 0,
+        "pitch": -4.5,
+        "fov": 52,
+        "hold": [
+          "KeyW"
+        ]
+      },
+      "titles": [
+        {
+          "text": "THIS ISN'T OCEAN FOOTAGE.",
+          "style": "headline",
+          "in": 0.35,
+          "out": 2.15,
+          "formats": {
+            "vertical": {
+              "text": "THIS ISN'T\nOCEAN FOOTAGE."
+            }
+          }
+        },
+        {
+          "text": "IT'S WEBGPU.",
+          "style": "reveal",
+          "color": "cyan",
+          "in": 2.3,
+          "out": 4
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              3.2,
+              0
+            ],
+            "yaw": 0,
+            "pitch": -6,
+            "fov": 62,
+            "hold": [
+              "KeyW"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "waves-close",
+      "duration": 2.75,
+      "app": {
+        "skyMode": "static",
+        "sunElev": 13,
+        "sunAzim": 30,
+        "cloudMode": "static",
+        "clouds": 0.25,
+        "windSpeed": 9,
+        "swellHs": 2.4,
+        "choppy": 1.3,
+        "foam": 1
+      },
+      "camera": {
+        "position": [
+          0,
+          1.6,
+          0
+        ],
+        "yaw": 18,
+        "pitch": -8,
+        "fov": 50
+      },
+      "ramps": [
+        {
+          "key": "windSpeed",
+          "from": 9,
+          "to": 13,
+          "start": 0,
+          "end": 3.25
+        }
+      ],
+      "titles": [
+        {
+          "text": "REAL-TIME OCEAN SIMULATION",
+          "style": "headline",
+          "in": 0.35,
+          "out": 5.2,
+          "formats": {
+            "vertical": {
+              "text": "REAL-TIME OCEAN\nSIMULATION"
+            }
+          }
+        },
+        {
+          "text": "GPU waves • Reflections • Whitecaps",
+          "style": "sub",
+          "in": 0.9,
+          "out": 5.2,
+          "formats": {
+            "vertical": {
+              "text": "GPU waves • Reflections\nWhitecaps"
+            }
+          }
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              1.6,
+              0
+            ],
+            "yaw": 18,
+            "pitch": -8,
+            "fov": 66
+          }
+        }
+      }
+    },
+    {
+      "id": "waves-wide",
+      "duration": 2.75,
+      "app": {
+        "skyMode": "static",
+        "sunElev": 7,
+        "sunAzim": -8,
+        "cloudMode": "static",
+        "clouds": 0.25,
+        "windSpeed": 13,
+        "swellHs": 3.2,
+        "swellLength": 160,
+        "choppy": 1.35,
+        "foam": 1.2
+      },
+      "camera": {
+        "position": [
+          0,
+          7,
+          0
+        ],
+        "yaw": -8,
+        "pitch": -7,
+        "fov": 55
+      },
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              7,
+              0
+            ],
+            "yaw": -8,
+            "pitch": -7,
+            "fov": 66
+          }
+        }
+      }
+    },
+    {
+      "id": "sky",
+      "duration": 7,
+      "app": {
+        "skyMode": "lapse",
+        "skyLapseStart": "2026-11-14T16:55",
+        "lapsePace": 20,
+        "cloudMode": "static",
+        "clouds": 0.15,
+        "veil": 0.2,
+        "windSpeed": 6,
+        "swellHs": 1.6,
+        "exposure": 1.5
+      },
+      "camera": {
+        "position": [
+          0,
+          3,
+          0
+        ],
+        "yaw": 50,
+        "pitch": 15,
+        "fov": 66,
+        "pan": {
+          "x": -1,
+          "end": 4
+        }
+      },
+      "ramps": [
+        {
+          "key": "exposure",
+          "from": 1.5,
+          "to": 3,
+          "start": 2,
+          "end": 6
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              3,
+              0
+            ],
+            "yaw": 66,
+            "pitch": 12,
+            "fov": 75,
+            "pan": {
+              "x": -2,
+              "end": 4
+            }
+          }
+        }
+      },
+      "titles": [
+        {
+          "text": "A LIVING SKY",
+          "style": "headline",
+          "color": "gold",
+          "in": 0.4,
+          "out": 3.4
+        },
+        {
+          "text": "Sun • Moon • 8,404 stars",
+          "style": "sub",
+          "in": 3.6,
+          "out": 6.8
+        }
+      ]
+    },
+    {
+      "id": "calm",
+      "duration": 1.75,
+      "app": {
+        "skyMode": "static",
+        "sunElev": 14,
+        "sunAzim": 10,
+        "cloudMode": "static",
+        "clouds": 0.7,
+        "cloudDensity": 3.2,
+        "veil": 0.5,
+        "windSpeed": 5,
+        "swellHs": 1.2
+      },
+      "camera": {
+        "position": [
+          0,
+          2.6,
+          0
+        ],
+        "yaw": 0,
+        "pitch": 2,
+        "fov": 60
+      },
+      "titles": [
+        {
+          "text": "DYNAMIC WEATHER",
+          "style": "headline",
+          "in": 0.3,
+          "out": 5.7,
+          "scrim": 0.55
+        },
+        {
+          "text": "Rain • Lightning • Storms",
+          "style": "sub",
+          "in": 0.8,
+          "out": 5.7,
+          "scrim": 0.55
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              2.6,
+              0
+            ],
+            "yaw": 0,
+            "pitch": 2,
+            "fov": 72
+          }
+        }
+      }
+    },
+    {
+      "id": "storm",
+      "duration": 4.25,
+      "seed": 7,
+      "app": {
+        "skyMode": "static",
+        "sunElev": 2,
+        "sunAzim": 75,
+        "cloudMode": "static",
+        "rain": true,
+        "rainIntensity": 0.35,
+        "rainStyle": "thunderstorm",
+        "rainLightning": 1,
+        "windSpeed": 10,
+        "swellHs": 2.6,
+        "foam": 1.6
+      },
+      "camera": {
+        "position": [
+          0,
+          3,
+          0
+        ],
+        "yaw": 0,
+        "pitch": 3,
+        "fov": 60
+      },
+      "ramps": [
+        {
+          "key": "rainIntensity",
+          "from": 0.35,
+          "to": 0.9,
+          "start": 0,
+          "end": 3
+        },
+        {
+          "key": "windSpeed",
+          "from": 10,
+          "to": 16,
+          "start": 0,
+          "end": 4
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              3,
+              0
+            ],
+            "yaw": 0,
+            "pitch": 3,
+            "fov": 72
+          }
+        }
+      }
+    },
+    {
+      "id": "frame",
+      "duration": 4,
+      "clock": "2026-11-16T17:39",
+      "uiScale": 1.6,
+      "app": {
+        "skyMode": "dynamic",
+        "cloudMode": "static",
+        "clouds": 0.15,
+        "veil": 0.2,
+        "windSpeed": 7,
+        "exposure": 1.6,
+        "clock": true,
+        "compass": true,
+        "weather": true,
+        "weatherAlerts": false
+      },
+      "camera": {
+        "position": [
+          0,
+          2.6,
+          0
+        ],
+        "yaw": 50,
+        "pitch": 10,
+        "fov": 62
+      },
+      "formats": {
+        "vertical": {
+          "source": "landscape",
+          "layout": "blur-fit"
+        },
+        "landscape": {
+          "titleY": 0.43
+        }
+      },
+      "titles": [
+        {
+          "text": "YOUR OCEAN. YOUR SCREEN.",
+          "style": "headline",
+          "in": 0.35,
+          "out": 3.9,
+          "formats": {
+            "vertical": {
+              "text": "YOUR OCEAN.\nYOUR SCREEN."
+            }
+          }
+        },
+        {
+          "text": "Clock • Weather • Ambient Sound",
+          "style": "sub",
+          "in": 0.85,
+          "out": 3.9
+        }
+      ]
+    },
+    {
+      "id": "cta",
+      "duration": 3.5,
+      "app": {
+        "skyMode": "night",
+        "moonElev": 9,
+        "moonAzim": 0,
+        "moonPhase": 0.97,
+        "stars": true,
+        "starMode": "static",
+        "starDensity": 0.8,
+        "cloudMode": "static",
+        "clouds": 0,
+        "veil": 0,
+        "windSpeed": 7,
+        "swellHs": 1.8,
+        "exposure": 1.6
+      },
+      "camera": {
+        "position": [
+          0,
+          2.4,
+          0
+        ],
+        "yaw": 0,
+        "pitch": 3,
+        "fov": 55
+      },
+      "titles": [
+        {
+          "text": "FREE & OPEN SOURCE",
+          "style": "headline",
+          "in": 0.15,
+          "out": 1.2,
+          "formats": {
+            "vertical": {
+              "text": "FREE & OPEN\nSOURCE"
+            }
+          }
+        },
+        {
+          "text": "RUNS IN YOUR BROWSER",
+          "style": "headline",
+          "color": "cyan",
+          "in": 1.1,
+          "out": 2,
+          "formats": {
+            "vertical": {
+              "text": "RUNS IN\nYOUR BROWSER"
+            }
+          }
+        },
+        {
+          "text": "FREE & OPEN SOURCE  •  RUNS IN YOUR BROWSER",
+          "style": "kicker",
+          "in": 1.95,
+          "out": 3.5,
+          "fadeOut": 0,
+          "formats": {
+            "vertical": {
+              "text": "FREE & OPEN SOURCE\nRUNS IN YOUR BROWSER"
+            }
+          }
+        },
+        {
+          "text": "github.com/jfayling/fayling-web-ocean-pictureframe",
+          "style": "url",
+          "in": 1.95,
+          "out": 3.5,
+          "fadeOut": 0,
+          "formats": {
+            "vertical": {
+              "text": "github.com/jfayling/\nfayling-web-ocean-pictureframe"
+            }
+          }
+        }
+      ],
+      "formats": {
+        "vertical": {
+          "camera": {
+            "position": [
+              0,
+              2.4,
+              0
+            ],
+            "yaw": 0,
+            "pitch": 2,
+            "fov": 66
+          }
+        }
+      }
+    }
+  ]
+}

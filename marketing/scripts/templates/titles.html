@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  #stage { position: relative; width: var(--w); height: var(--h); font-family: var(--font); color: #fff;
+           -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+  #scrim { position: absolute; inset: 0; pointer-events: none; }
+  .t { position: absolute; left: 0; right: 0; text-align: center; white-space: pre; will-change: opacity, transform;
+       padding: 0 var(--pad); box-sizing: border-box; }
+  .t > .fit { display: inline-block; }
+  .headline { font-weight: 700; letter-spacing: .14em; line-height: 1.08;
+              text-shadow: 0 2px 6px rgba(0,0,0,.35), 0 4px 28px rgba(0,0,0,.45); }
+  .reveal { font-weight: 800; letter-spacing: .1em; line-height: 1;
+            text-shadow: 0 2px 8px rgba(0,0,0,.35), 0 0 42px rgba(0,0,0,.35); }
+  .sub { font-weight: 500; letter-spacing: .05em; line-height: 1.25; color: rgba(255,255,255,.94);
+         text-shadow: 0 1px 4px rgba(0,0,0,.45), 0 3px 18px rgba(0,0,0,.45); }
+  .kicker { font-weight: 600; letter-spacing: .28em; line-height: 1.3; text-transform: uppercase;
+            text-shadow: 0 1px 4px rgba(0,0,0,.5), 0 2px 16px rgba(0,0,0,.4); }
+  .url { font-weight: 600; letter-spacing: .02em; line-height: 1.25;
+         text-shadow: 0 1px 4px rgba(0,0,0,.5), 0 3px 20px rgba(0,0,0,.45); }
+  .url .gh { display: inline-block; width: 1.05em; height: 1.05em; vertical-align: -0.17em; margin-right: .45em; }
+  .url .dim { opacity: .72; font-weight: 500; }
+  .rule { display: block; width: 3.2em; height: 2px; margin: .55em auto 0; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="scrim"></div></div>
+<script>
+// Data arrives from titles.mjs as window.__TITLES__ = { width, height, font, colors, sizes, titles: [...] }.
+const GH = '<svg class="gh" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
+const D = window.__TITLES__;
+const stage = document.getElementById('stage');
+const scrim = document.getElementById('scrim');
+stage.style.setProperty('--w', D.width + 'px');
+stage.style.setProperty('--h', D.height + 'px');
+stage.style.setProperty('--font', D.font);
+stage.style.setProperty('--pad', Math.round(D.width * 0.06) + 'px');
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+const els = D.titles.map((t) => {
+  const el = document.createElement('div');
+  el.className = 't ' + t.style;
+  el.style.fontSize = t.size + 'px';
+  el.style.color = t.color;
+  let inner;
+  if (t.style === 'url') {
+    const text = esc(t.text);
+    const cut = text.indexOf('/') + 1;
+    inner = GH + (cut > 0 ? `<span class="dim">${text.slice(0, cut)}</span>${text.slice(cut)}` : text);
+  } else {
+    inner = esc(t.text);
+  }
+  el.innerHTML = `<span class="fit">${inner}</span>`;
+  if (t.style === 'reveal') {
+    const rule = document.createElement('span');
+    rule.className = 'rule';
+    rule.style.background = t.color;
+    el.appendChild(rule);
+  }
+  stage.appendChild(el);
+  // Lines only break where the text has \n; a line wider than the safe area shrinks to fit.
+  const room = el.clientWidth - 2 * parseFloat(getComputedStyle(el).paddingLeft);
+  const fit = el.querySelector('.fit');
+  let size = t.size;
+  // Leave room for the tracking that opens up during the title's life.
+  while (fit.getBoundingClientRect().width * 1.04 > room && size > 12) {
+    size *= 0.96;
+    el.style.fontSize = size + 'px';
+  }
+  t.size = size;
+  return el;
+});
+// Each title is centred on its y line unless it hangs below/above another title.
+const tops = [];
+const place = (i) => {
+  if (tops[i] !== undefined) return tops[i];
+  const t = D.titles[i], el = els[i];
+  if (t.anchor) {
+    const j = t.anchor.index, a = els[j];
+    const aTop = place(j);
+    const gap = Math.max(t.size, D.titles[j].size) * (t.anchor.gap ?? 0.32);
+    tops[i] = t.anchor.side === 'above' ? aTop - gap - el.offsetHeight : aTop + a.offsetHeight + gap;
+  } else {
+    tops[i] = t.y * D.height - el.offsetHeight / 2;
+  }
+  return tops[i];
+};
+els.forEach((el, i) => {
+  el.style.top = place(i) + 'px';
+  D.titles[i].y = (place(i) + el.offsetHeight / 2) / D.height;
+});
+
+const clamp = (v) => Math.max(0, Math.min(1, v));
+const ease = (v) => { v = clamp(v); return v * v * (3 - 2 * v); };
+const outCubic = (v) => 1 - Math.pow(1 - clamp(v), 3);
+
+window.renderAt = (time) => {
+  let veil = 0, sumY = 0, sumA = 0, shown = false;
+  D.titles.forEach((t, i) => {
+    const el = els[i];
+    const local = time - t.start;
+    const life = t.end - t.start;
+    const inK = t.fadeIn > 0 ? outCubic(local / t.fadeIn) : (local >= 0 ? 1 : 0);
+    const outK = t.fadeOut > 0 ? 1 - ease((local - (life - t.fadeOut)) / t.fadeOut) : (local <= life ? 1 : 0);
+    const a = local < 0 || local > life + 1e-6 ? 0 : Math.min(inK, outK);
+    el.style.opacity = a.toFixed(4);
+    if (a <= 0) { el.style.visibility = 'hidden'; return; }
+    el.style.visibility = 'visible';
+    shown = true;
+    // Slide up on entry, drift up slightly on exit, and open the tracking a touch over the title's life.
+    const rise = (1 - inK) * t.size * 0.22 - (1 - outK) * t.size * 0.08;
+    const track = (local / Math.max(life, 0.001)) * 0.025;
+    let transform = `translateY(${rise.toFixed(2)}px)`;
+    if (t.style === 'reveal') {
+      const s = 1.08 - 0.08 * inK;
+      transform += ` scale(${s.toFixed(4)})`;
+      el.style.filter = `blur(${((1 - inK) * 10).toFixed(2)}px)`;
+      el.style.textShadow = `0 2px 8px rgba(0,0,0,.35), 0 0 ${Math.round(24 + 30 * inK)}px ${t.glow}`;
+    }
+    el.style.transform = transform;
+    if (t.style === 'headline' || t.style === 'reveal') el.style.letterSpacing = ((t.style === 'reveal' ? 0.1 : 0.14) + track) + 'em';
+    if (t.scrim !== false) { veil = Math.max(veil, a * (t.scrim ?? D.scrimStrength)); sumY += t.y * a; sumA += a; }
+  });
+  // A soft darkening behind the text band keeps white type readable over bright sky.
+  const band = sumA > 0 ? (sumY / sumA) * 100 : 50;
+  scrim.style.background = veil > 0
+    ? `radial-gradient(ellipse 75% ${D.scrimHeight}% at 50% ${band.toFixed(2)}%, rgba(0,0,0,${veil.toFixed(3)}), rgba(0,0,0,0) 72%)`
+    : 'none';
+  return shown;
+};
+window.renderAt(0);
+window.__ready = true;
+</script>
+</body>
+</html>

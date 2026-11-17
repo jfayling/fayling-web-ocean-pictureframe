@@ -11,3 +11,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+# promo video pipeline (marketing/): intermediates and rendered videos are regenerated, not committed
+marketing/build/
+marketing/videos/*.mp4

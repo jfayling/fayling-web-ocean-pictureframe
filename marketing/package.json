@@ -1,0 +1,23 @@
+{
+  "name": "ocean-marketing-video",
+  "private": true,
+  "type": "module",
+  "description": "Isolated promo video pipeline. Not part of the app runtime.",
+  "scripts": {
+    "probe": "node scripts/probe-webgpu.mjs",
+    "capture": "node scripts/capture.mjs",
+    "titles": "node scripts/titles.mjs",
+    "compose": "node scripts/compose.mjs",
+    "thumbnails": "node scripts/thumbnails.mjs",
+    "validate": "node scripts/validate.mjs",
+    "produce": "node scripts/produce.mjs"
+  },
+  "devDependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "playwright-core": "^1.65.1"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true
+  }
+}

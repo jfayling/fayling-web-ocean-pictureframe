@@ -1,0 +1,7 @@
+{
+ "url": "https://api.weather.gov/alerts/active?point=33.3958,-84.7121",
+ "status": 200,
+ "contentType": "application/geo+json",
+ "fetchedAt": "2026-11-17T00:55:42.432Z",
+ "body": "{\n    \"@context\": {\n        \"@version\": \"1.1\"\n    },\n    \"type\": \"FeatureCollection\",\n    \"features\": [],\n    \"title\": \"Current watches, warnings, and advisories for 33.3958 N, 84.7121 W\",\n    \"updated\": \"2026-11-17T00:55:26+00:00\"\n}"
+}

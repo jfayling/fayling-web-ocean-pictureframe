@@ -1,0 +1,7 @@
+{
+ "url": "https://api.zippopotam.us/us/30265",
+ "status": 200,
+ "contentType": "application/json",
+ "fetchedAt": "2026-11-17T00:51:58.052Z",
+ "body": "{\"country\": \"United States\", \"country abbreviation\": \"US\", \"post code\": \"30265\", \"places\": [{\"place name\": \"Newnan\", \"longitude\": \"-84.7121\", \"latitude\": \"33.3958\", \"state\": \"Georgia\", \"state abbreviation\": \"GA\"}]}"
+}
